@@ -1,0 +1,30 @@
+# Global fallback — Purushotham reviews everything by default
+* @Mpurushotham
+
+# Terraform infrastructure
+/terraform/ @Mpurushotham
+
+# Security configs and policies — always require security owner review
+/security/ @Mpurushotham
+/terraform/modules/security-hub/ @Mpurushotham
+/terraform/modules/aws-config/ @Mpurushotham
+/terraform/modules/guardduty/ @Mpurushotham
+/terraform/modules/iam/ @Mpurushotham
+/terraform/modules/organizations/ @Mpurushotham
+/terraform/modules/waf/ @Mpurushotham
+
+# CI/CD pipelines
+/.github/workflows/ @Mpurushotham
+
+# Production environment — extra scrutiny
+/terraform/environments/prod/ @Mpurushotham
+
+# Application source
+/src/ @Mpurushotham
+
+# Kubernetes and ECS workloads
+/kubernetes/ @Mpurushotham
+/ecs/ @Mpurushotham
+
+# Documentation
+/docs/ @Mpurushotham
