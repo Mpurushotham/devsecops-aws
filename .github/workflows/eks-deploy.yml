@@ -1,0 +1,94 @@
+name: EKS Deploy
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        required: true
+        type: string
+      image-tag:
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: choice
+        options: [dev, staging, prod]
+        required: true
+      image-tag:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  deploy-eks:
+    name: Deploy to EKS (${{ inputs.environment }})
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ inputs.environment }}-cicd-deploy-role
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: EKSDeploy
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: '3.13.0'
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig \
+            --region ${{ env.AWS_REGION }} \
+            --name ${{ inputs.environment }}-cluster
+
+      - name: Verify cluster access
+        run: kubectl cluster-info
+
+      - name: Install/Upgrade via Helm
+        run: |
+          helm upgrade --install app kubernetes/helm-charts/app \
+            --namespace ${{ inputs.environment }} \
+            --create-namespace \
+            --set image.tag=${{ inputs.image-tag }} \
+            --set environment=${{ inputs.environment }} \
+            --values kubernetes/helm-charts/app/values-${{ inputs.environment }}.yaml \
+            --wait \
+            --timeout 5m \
+            --atomic
+
+      - name: Verify deployment
+        run: |
+          kubectl rollout status deployment/app -n ${{ inputs.environment }}
+          kubectl get pods -n ${{ inputs.environment }}
+
+      - name: Run smoke tests
+        run: |
+          SERVICE_URL=$(kubectl get svc app -n ${{ inputs.environment }} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+          curl -sf "http://${SERVICE_URL}/health" || exit 1
+
+      - name: Notify on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `EKS deployment to **${{ inputs.environment }}** FAILED. Image: \`${{ inputs.image-tag }}\``
+            });

@@ -1,0 +1,67 @@
+# Developer read-only ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: developer-view
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services", "endpoints", "configmaps", "events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets", "statefulsets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list", "watch"]
+---
+# CI/CD deploy role (namespace-scoped)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: cicd-deployer
+  namespace: prod
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["configmaps", "secrets"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+# Bind CI/CD service account to deployer role
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cicd-deployer-binding
+  namespace: prod
+subjects:
+  - kind: ServiceAccount
+    name: cicd-sa
+    namespace: prod
+roleRef:
+  kind: Role
+  name: cicd-deployer
+  apiGroup: rbac.authorization.k8s.io
+---
+# CI/CD ServiceAccount with IRSA annotation
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cicd-sa
+  namespace: prod
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/prod-cicd-deploy-role
+automountServiceAccountToken: false
+---
+# App ServiceAccount (least privilege)
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: app-sa
+  namespace: prod
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/prod-app-role
+automountServiceAccountToken: false

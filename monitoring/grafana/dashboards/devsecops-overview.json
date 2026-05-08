@@ -1,0 +1,75 @@
+{
+  "title": "DevSecOps AWS Overview",
+  "uid": "devsecops-overview",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "1m",
+  "tags": ["devsecops", "aws", "security"],
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Security Hub Critical Findings",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "targets": [{
+        "expr": "aws_securityhub_total_findings{severity='CRITICAL'}",
+        "legendFormat": "Critical"
+      }],
+      "options": {
+        "colorMode": "background",
+        "thresholds": {
+          "steps": [
+            { "color": "green", "value": 0 },
+            { "color": "red", "value": 1 }
+          ]
+        }
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "GuardDuty High Findings (24h)",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "targets": [{
+        "expr": "increase(aws_guardduty_finding_count[24h])",
+        "legendFormat": "High+"
+      }]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "ECS Service CPU Utilization",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "targets": [{
+        "expr": "aws_ecs_service_cpu_utilization{cluster_name=~'prod-.*'}",
+        "legendFormat": "{{ service_name }}"
+      }]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "EKS Node CPU/Memory",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "targets": [
+        {
+          "expr": "node_cpu_seconds_total{mode='idle'}",
+          "legendFormat": "CPU Idle"
+        },
+        {
+          "expr": "node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes * 100",
+          "legendFormat": "Memory Available %"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "table",
+      "title": "Config Non-Compliant Rules",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "targets": [{
+        "expr": "aws_config_compliance_by_config_rule{compliance_type='NON_COMPLIANT'}",
+        "legendFormat": "{{ rule_name }}"
+      }]
+    }
+  ]
+}

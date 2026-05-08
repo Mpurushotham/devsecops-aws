@@ -1,0 +1,71 @@
+{
+  "family": "prod-app",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::ACCOUNT_ID:role/prod-ecs-execution-role",
+  "taskRoleArn": "arn:aws:iam::ACCOUNT_ID:role/prod-ecs-task-role",
+  "containerDefinitions": [
+    {
+      "name": "app",
+      "image": "ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/prod/api:latest",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 8080,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        { "name": "ENVIRONMENT", "value": "prod" },
+        { "name": "AWS_REGION", "value": "us-east-1" }
+      ],
+      "secrets": [
+        {
+          "name": "DB_PASSWORD",
+          "valueFrom": "arn:aws:secretsmanager:us-east-1:ACCOUNT_ID:secret:prod/db-password"
+        },
+        {
+          "name": "API_KEY",
+          "valueFrom": "arn:aws:secretsmanager:us-east-1:ACCOUNT_ID:secret:prod/api-key"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/prod",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "app"
+        }
+      },
+      "healthCheck": {
+        "command": ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 60
+      },
+      "readonlyRootFilesystem": true,
+      "user": "1000:1000",
+      "linuxParameters": {
+        "capabilities": {
+          "drop": ["ALL"],
+          "add": []
+        },
+        "initProcessEnabled": false
+      },
+      "ulimits": [
+        {
+          "name": "nofile",
+          "softLimit": 4096,
+          "hardLimit": 8192
+        }
+      ]
+    }
+  ],
+  "tags": [
+    { "key": "Environment", "value": "prod" },
+    { "key": "Project", "value": "devsecops-aws" }
+  ]
+}

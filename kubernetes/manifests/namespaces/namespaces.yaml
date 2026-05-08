@@ -1,0 +1,44 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dev
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+    environment: dev
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: staging
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    environment: staging
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: prod
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    environment: prod
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+    environment: shared
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: security
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    environment: shared

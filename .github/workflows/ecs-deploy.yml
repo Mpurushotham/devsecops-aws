@@ -1,0 +1,84 @@
+name: ECS Deploy
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        required: true
+        type: string
+      image-tag:
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: choice
+        options: [dev, staging, prod]
+        required: true
+      image-tag:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  deploy-ecs:
+    name: Deploy to ECS (${{ inputs.environment }})
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ inputs.environment }}-cicd-deploy-role
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: ECSDeploy
+
+      - name: Download task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition ${{ inputs.environment }}-app \
+            --query taskDefinition \
+            > task-def.json
+
+      - name: Update task definition with new image
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-def.json
+          container-name: app
+          image: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ inputs.environment }}/api:${{ inputs.image-tag }}
+
+      - name: Deploy to ECS
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          service: ${{ inputs.environment }}-app-service
+          cluster: ${{ inputs.environment }}-cluster
+          wait-for-service-stability: true
+          wait-for-minutes: 10
+
+      - name: Run health check
+        run: |
+          aws ecs describe-services \
+            --cluster ${{ inputs.environment }}-cluster \
+            --services ${{ inputs.environment }}-app-service \
+            --query 'services[0].runningCount' \
+            --output text
+
+      - name: Rollback on failure
+        if: failure()
+        run: |
+          echo "Deployment failed, triggering rollback..."
+          aws ecs update-service \
+            --cluster ${{ inputs.environment }}-cluster \
+            --service ${{ inputs.environment }}-app-service \
+            --force-new-deployment

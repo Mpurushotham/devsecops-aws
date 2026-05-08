@@ -1,0 +1,145 @@
+name: Terraform Validate & Plan
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'terraform/**'
+  push:
+    branches: [main]
+    paths:
+      - 'terraform/**'
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+
+env:
+  TF_VERSION: 1.5.7
+  AWS_REGION: us-east-1
+
+jobs:
+  validate:
+    name: Terraform Validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive terraform/
+      - name: Validate All Modules
+        run: |
+          for dir in terraform/modules/*/; do
+            echo "Validating $dir"
+            cd "$dir"
+            terraform init -backend=false
+            terraform validate
+            cd -
+          done
+
+  plan-dev:
+    name: Plan Dev
+    runs-on: ubuntu-latest
+    needs: validate
+    environment: dev
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/dev-cicd-deploy-role
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: TerraformPlan
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      - name: Terraform Init
+        working-directory: terraform/environments/dev
+        run: terraform init
+      - name: Terraform Plan
+        working-directory: terraform/environments/dev
+        id: plan
+        run: terraform plan -no-color -out=tfplan 2>&1 | tee plan_output.txt
+      - name: Comment PR
+        uses: actions/github-script@v7
+        if: github.event_name == 'pull_request'
+        with:
+          script: |
+            const fs = require('fs');
+            const plan = fs.readFileSync('terraform/environments/dev/plan_output.txt', 'utf8');
+            const body = `## Terraform Plan - Dev\n\`\`\`hcl\n${plan.slice(0, 65000)}\n\`\`\``;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body
+            });
+
+  plan-staging:
+    name: Plan Staging
+    runs-on: ubuntu-latest
+    needs: plan-dev
+    if: github.ref == 'refs/heads/main'
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID_STAGING }}:role/staging-cicd-deploy-role
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: TerraformPlan
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      - name: Terraform Init & Plan
+        working-directory: terraform/environments/staging
+        run: |
+          terraform init
+          terraform plan -no-color
+
+  apply-dev:
+    name: Apply Dev
+    runs-on: ubuntu-latest
+    needs: plan-dev
+    if: github.ref == 'refs/heads/develop'
+    environment: dev
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/dev-cicd-deploy-role
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: TerraformApply
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      - name: Terraform Apply Dev
+        working-directory: terraform/environments/dev
+        run: |
+          terraform init
+          terraform apply -auto-approve
+
+  apply-prod:
+    name: Apply Prod (Manual Approval)
+    runs-on: ubuntu-latest
+    needs: plan-staging
+    if: github.ref == 'refs/heads/main'
+    environment:
+      name: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID_PROD }}:role/prod-cicd-deploy-role
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: TerraformApply
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      - name: Terraform Apply Prod
+        working-directory: terraform/environments/prod
+        run: |
+          terraform init
+          terraform apply -auto-approve

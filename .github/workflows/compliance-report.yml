@@ -1,0 +1,101 @@
+name: Compliance Report
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'   # Weekly Monday 6am UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+  issues: write
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  generate-report:
+    name: Generate Compliance Report
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/prod-security-auditor
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: ComplianceReport
+
+      - name: Collect Security Hub Summary
+        id: securityhub
+        run: |
+          aws securityhub get-findings \
+            --filters '{"RecordState":[{"Value":"ACTIVE","Comparison":"EQUALS"}],"WorkflowStatus":[{"Value":"NEW","Comparison":"EQUALS"}]}' \
+            --query 'Findings[].{Severity:Severity.Label,Title:Title,AccountId:AwsAccountId}' \
+            --output json > securityhub-findings.json
+          echo "total=$(cat securityhub-findings.json | jq length)" >> $GITHUB_OUTPUT
+
+      - name: Collect Config Compliance
+        run: |
+          aws configservice describe-compliance-by-config-rule \
+            --query 'ComplianceByConfigRules[?Compliance.ComplianceType!=`COMPLIANT`]' \
+            --output json > config-noncompliant.json
+
+      - name: Collect GuardDuty Findings
+        run: |
+          DETECTOR=$(aws guardduty list-detectors --query 'DetectorIds[0]' --output text)
+          aws guardduty list-findings \
+            --detector-id "$DETECTOR" \
+            --finding-criteria '{"Criterion":{"severity":{"Gte":7}}}' \
+            --output json > guardduty-findings.json
+
+      - name: Generate Markdown Report
+        run: |
+          cat > compliance-report.md << 'REPORT'
+          # Weekly Compliance Report
+          **Generated:** $(date -u +"%Y-%m-%d %H:%M UTC")
+          **Account:** ${{ secrets.AWS_ACCOUNT_ID }}
+
+          ## Security Hub Findings
+          ```json
+          $(cat securityhub-findings.json | jq '[.[] | {Severity, Title}] | group_by(.Severity) | map({severity: .[0].Severity, count: length})')
+          ```
+
+          ## Config Non-Compliant Rules
+          ```json
+          $(cat config-noncompliant.json | jq '[.[] | {Rule: .ConfigRuleName, Status: .Compliance.ComplianceType}]')
+          ```
+
+          ## High Severity GuardDuty Findings
+          ```json
+          $(cat guardduty-findings.json | jq '.FindingIds | length') findings
+          ```
+          REPORT
+
+      - name: Create GitHub Issue for Findings
+        uses: actions/github-script@v7
+        if: steps.securityhub.outputs.total > 0
+        with:
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('compliance-report.md', 'utf8');
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Weekly Compliance Report - ${new Date().toISOString().split('T')[0]}`,
+              body: report,
+              labels: ['compliance', 'security', 'automated']
+            });
+
+      - name: Upload Reports as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: compliance-reports-${{ github.run_number }}
+          path: |
+            securityhub-findings.json
+            config-noncompliant.json
+            guardduty-findings.json
+            compliance-report.md
+          retention-days: 90
