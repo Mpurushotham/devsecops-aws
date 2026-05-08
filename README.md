@@ -1,5 +1,11 @@
 # DevSecOps on AWS — End-to-End Platform
 
+[![DevSecOps Pipeline](https://github.com/Mpurushotham/devsecops-aws/actions/workflows/devsecops-pipeline.yml/badge.svg)](https://github.com/Mpurushotham/devsecops-aws/actions/workflows/devsecops-pipeline.yml)
+[![Security Scanning](https://github.com/Mpurushotham/devsecops-aws/actions/workflows/security-scan.yml/badge.svg)](https://github.com/Mpurushotham/devsecops-aws/actions/workflows/security-scan.yml)
+[![Terraform Validate](https://github.com/Mpurushotham/devsecops-aws/actions/workflows/terraform-validate.yml/badge.svg)](https://github.com/Mpurushotham/devsecops-aws/actions/workflows/terraform-validate.yml)
+[![Container Build](https://github.com/Mpurushotham/devsecops-aws/actions/workflows/container-build.yml/badge.svg)](https://github.com/Mpurushotham/devsecops-aws/actions/workflows/container-build.yml)
+[![Compliance Report](https://github.com/Mpurushotham/devsecops-aws/actions/workflows/compliance-report.yml/badge.svg)](https://github.com/Mpurushotham/devsecops-aws/actions/workflows/compliance-report.yml)
+
 A production-grade DevSecOps platform on AWS covering infrastructure as code, multi-account organization, full CI/CD security pipeline, ECS and EKS compute, automated threat detection and response, compliance automation, and observability.
 
 ## Architecture
