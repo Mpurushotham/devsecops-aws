@@ -1,0 +1,54 @@
+# The single Application Terraform creates points at this directory.
+# Everything below is discovered from git, so adding a workload means adding a
+# file here rather than running terraform or kubectl against the cluster.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: platform-project
+  namespace: argocd
+  annotations:
+    # Projects must exist before any Application that references them, so this
+    # sync wave runs first.
+    argocd.argoproj.io/sync-wave: '-1'
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/Mpurushotham/devsecops-aws.git
+    targetRevision: main
+    path: gitops/projects
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: applications
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: '0'
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/Mpurushotham/devsecops-aws.git
+    targetRevision: main
+    path: gitops/applications
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

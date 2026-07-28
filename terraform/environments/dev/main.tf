@@ -10,6 +10,14 @@ terraform {
       source  = "hashicorp/tls"
       version = "~> 4.0"
     }
+    helm = {
+      source  = "hashicorp/helm"
+      version = "~> 2.12"
+    }
+    kubernetes = {
+      source  = "hashicorp/kubernetes"
+      version = "~> 2.27"
+    }
   }
 
   # The state bucket and lock table are created out of band by
@@ -155,4 +163,43 @@ module "monitoring" {
   eks_cluster_name          = module.eks.cluster_name
   ecs_cluster_name          = module.ecs.cluster_name
   cloudtrail_log_group_name = module.cloudtrail.log_group_name
+}
+
+# --- GitOps delivery ---
+# These providers talk to the cluster the eks module just created. Terraform
+# resolves them at apply time, so a fresh apply installs ArgoCD in the same run
+# that creates the cluster.
+provider "kubernetes" {
+  host                   = module.eks.cluster_endpoint
+  cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
+
+  exec {
+    api_version = "client.authentication.k8s.io/v1beta1"
+    command     = "aws"
+    args        = ["eks", "get-token", "--cluster-name", module.eks.cluster_name, "--region", var.aws_region]
+  }
+}
+
+provider "helm" {
+  kubernetes {
+    host                   = module.eks.cluster_endpoint
+    cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
+
+    exec {
+      api_version = "client.authentication.k8s.io/v1beta1"
+      command     = "aws"
+      args        = ["eks", "get-token", "--cluster-name", module.eks.cluster_name, "--region", var.aws_region]
+    }
+  }
+}
+
+module "argocd" {
+  source            = "../../modules/argocd"
+  environment       = local.environment
+  cluster_name      = module.eks.cluster_name
+  oidc_provider_arn = module.eks.oidc_provider_arn
+  oidc_provider_url = module.eks.oidc_provider_url
+  kms_key_arn       = module.kms.key_arn
+
+  gitops_target_revision = "main"
 }
