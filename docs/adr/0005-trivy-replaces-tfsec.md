@@ -32,10 +32,22 @@ upload on the run where the findings actually matter.
 **Gained.** IaC scanning runs again. Checkov and Trivy now cover the same tree
 with different rule sets, and disagreements between them are informative.
 
-**Required action.** The branch protection contexts must be updated: the old
-`IaC Scan (tfsec)` context will never report again, and the new
-`IaC Scan (Trivy)` context is not yet required. Until that is changed, merges
-stay blocked. This cannot be fixed from inside the repository's files.
+**Required action, now done.** Branch protection required the context
+`Security Scanning / IaC Scan (tfsec)`, which would never report again. It has
+been replaced with `Security Scanning / IaC Scan (Trivy)`. Every other
+protection setting was left untouched.
+
+Two related things were also blocking merges and are worth recording, because
+neither is visible in the repository's files:
+
+- GitHub had auto-disabled the Security Scanning and Compliance Report
+  workflows for repository inactivity, so the required check could not report
+  regardless of its name. Both were re-enabled.
+- `enforce_admins` is on and `.github/CODEOWNERS` names a single owner, so a
+  pull request that owner authors cannot be approved by anyone and cannot be
+  admin-merged either. That is a policy decision rather than a defect, but it
+  means merging requires either a second reviewer with write access, or
+  temporarily relaxing one of the two settings.
 
 **Suppressions.** One finding is accepted in `.trivyignore.yaml` with a written
 justification. The file exists so that accepted risk is reviewable, rather than

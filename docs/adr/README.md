@@ -13,3 +13,4 @@ without a stated cost is usually a decision that was never really made.
 | [0006](0006-mandatory-tls.md) | No plaintext listener in any environment | Accepted |
 | [0007](0007-network-egress.md) | Egress scoped to VPC endpoints, one documented exception | Accepted |
 | [0008](0008-vendored-sample-app.md) | Vendor the AWS sample app rather than submodule it | Accepted |
+| [0009](0009-pin-actions-by-sha.md) | Pin GitHub Actions by commit SHA, not moving tags | Accepted |
