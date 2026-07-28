@@ -14,6 +14,10 @@ on:
         required: false
         default: kubernetes/helm-charts/app
         type: string
+    secrets:
+      AWS_ACCOUNT_ID:
+        description: Account hosting the EKS cluster and the deploy role
+        required: true
   workflow_dispatch:
     inputs:
       environment:
@@ -49,38 +53,46 @@ jobs:
     environment: ${{ inputs.environment }}
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6
         with:
           role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ inputs.environment }}-cicd-deploy-role
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: EKSDeploy
 
       - name: Setup kubectl
-        uses: azure/setup-kubectl@v5
+        uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5
 
       - name: Setup Helm
-        uses: azure/setup-helm@v5
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
         with:
           version: v3.16.3
 
       - name: Update kubeconfig
+        # Inputs are passed through env rather than interpolated into the
+        # script: ${{ }} is substituted before the shell parses the line, so a
+        # value containing shell metacharacters would run as code.
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
         run: |
           aws eks update-kubeconfig \
             --region "${AWS_REGION}" \
-            --name "${{ inputs.environment }}-cluster"
+            --name "${ENVIRONMENT}-cluster"
 
       - name: Verify cluster access
         run: kubectl cluster-info
 
       - name: Resolve values file
         id: values
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          CHART: ${{ inputs.chart }}
         run: |
           # Fall back to the chart defaults when no per-environment overlay
           # exists, instead of failing on a missing --values path.
-          candidate="${{ inputs.chart }}/values-${{ inputs.environment }}.yaml"
+          candidate="${CHART}/values-${ENVIRONMENT}.yaml"
           if [ -f "${candidate}" ]; then
             echo "args=--values ${candidate}" >> "$GITHUB_OUTPUT"
           else
@@ -89,54 +101,69 @@ jobs:
           fi
 
       - name: Install or upgrade via Helm
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          CHART: ${{ inputs.chart }}
+          IMAGE_TAG: ${{ inputs.image-tag }}
+          VALUES_ARGS: ${{ steps.values.outputs.args }}
         run: |
-          helm upgrade --install app "${{ inputs.chart }}" \
-            --namespace "${{ inputs.environment }}" \
+          # shellcheck disable=SC2086
+          # VALUES_ARGS is either empty or "--values <path>", and must split
+          # into separate words to be a valid argument pair.
+          helm upgrade --install app "${CHART}" \
+            --namespace "${ENVIRONMENT}" \
             --create-namespace \
-            --set image.tag="${{ inputs.image-tag }}" \
-            --set environment="${{ inputs.environment }}" \
-            ${{ steps.values.outputs.args }} \
+            --set image.tag="${IMAGE_TAG}" \
+            --set environment="${ENVIRONMENT}" \
+            ${VALUES_ARGS} \
             --wait \
             --timeout 10m \
             --atomic
 
       - name: Verify rollout
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
         run: |
           # The chart names the deployment <release>-app, so the release name
           # has to be part of the selector here.
           kubectl rollout status "deployment/app-app" \
-            --namespace "${{ inputs.environment }}" \
+            --namespace "${ENVIRONMENT}" \
             --timeout=5m
-          kubectl get pods --namespace "${{ inputs.environment }}" -o wide
+          kubectl get pods --namespace "${ENVIRONMENT}" -o wide
 
       - name: Run smoke test
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          RUN_ID: ${{ github.run_id }}
         run: |
           # Reach the service from inside the cluster: the ingress is internal
           # and an ALB hostname is not resolvable from a hosted runner.
-          kubectl run smoke-test-${{ github.run_id }} \
-            --namespace "${{ inputs.environment }}" \
+          kubectl run "smoke-test-${RUN_ID}" \
+            --namespace "${ENVIRONMENT}" \
             --image=curlimages/curl:8.11.1 \
             --restart=Never \
             --rm \
             --attach \
             --quiet \
-            --command -- curl -sSf --max-time 10 "http://app-app.${{ inputs.environment }}.svc.cluster.local/health"
+            --command -- curl -sSf --max-time 10 "http://app-app.${ENVIRONMENT}.svc.cluster.local/health"
 
       - name: Report failure
         if: failure()
         env:
           GH_TOKEN: ${{ github.token }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          IMAGE_TAG: ${{ inputs.image-tag }}
         run: |
           # The previous version called issues.createComment with
           # context.issue.number, which is undefined on workflow_dispatch and
           # workflow_call, so the notification itself threw.
           gh issue create \
             --repo "${GITHUB_REPOSITORY}" \
-            --title "EKS deploy to ${{ inputs.environment }} failed (${{ inputs.image-tag }})" \
+            --title "EKS deploy to ${ENVIRONMENT} failed (${IMAGE_TAG})" \
             --label "deployment,incident" \
-            --body "Helm release \`app\` failed to reach a healthy state in \`${{ inputs.environment }}\`.
+            --body "Helm release \`app\` failed to reach a healthy state in \`${ENVIRONMENT}\`.
 
-          Image tag: \`${{ inputs.image-tag }}\`
+          Image tag: \`${IMAGE_TAG}\`
           Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
 
           \`--atomic\` will have rolled the release back to the previous revision."

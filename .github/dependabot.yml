@@ -11,6 +11,12 @@ updates:
       day: monday
       time: '06:00'
     open-pull-requests-limit: 5
+    # A release is not adopted the instant it is published. Compromised
+    # packages are typically caught and yanked within days, and this window is
+    # what stops an automated bump from being the delivery mechanism.
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
     labels:
       - dependencies
       - python
@@ -35,6 +41,9 @@ updates:
       day: monday
       time: '06:00'
     open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
     labels:
       - dependencies
       - ci
@@ -48,6 +57,9 @@ updates:
       interval: weekly
       day: monday
       time: '06:00'
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
     labels:
       - dependencies
       - docker
@@ -61,6 +73,9 @@ updates:
       day: monday
       time: '06:00'
     open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
     labels:
       - dependencies
       - terraform

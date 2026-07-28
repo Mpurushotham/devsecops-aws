@@ -22,6 +22,10 @@ on:
       image-digest:
         description: Digest of the published image, empty when push was false
         value: ${{ jobs.build-and-scan.outputs.image-digest }}
+    secrets:
+      AWS_ACCOUNT_ID:
+        description: Account hosting the ECR registry and the deploy role
+        required: true
   workflow_dispatch:
     inputs:
       environment:
@@ -53,13 +57,13 @@ jobs:
       image-digest: ${{ steps.push.outputs.digest }}
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6
         with:
           role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ inputs.environment }}-cicd-deploy-role
           aws-region: ${{ env.AWS_REGION }}
@@ -67,11 +71,11 @@ jobs:
 
       - name: Login to Amazon ECR
         id: ecr-login
-        uses: aws-actions/amazon-ecr-login@v2
+        uses: aws-actions/amazon-ecr-login@d539f0932e70871a027e9d5a9d8fc38589180a64 # v2
 
       - name: Extract metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
           images: ${{ steps.ecr-login.outputs.registry }}/${{ inputs.environment }}/api
           tags: |
@@ -83,7 +87,7 @@ jobs:
       # inspect before anything is published.
       - name: Build image for scanning
         id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: src/app/
           push: false
@@ -105,7 +109,7 @@ jobs:
           echo "ref=${tag}" >> "$GITHUB_OUTPUT"
 
       - name: Run Trivy vulnerability scan
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ steps.target.outputs.ref }}
           format: sarif
@@ -117,14 +121,14 @@ jobs:
           ignore-unfixed: false
 
       - name: Upload Trivy SARIF
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@4187e74d05793876e9989daffde9c3e66b4acd07 # v3
         if: always()
         with:
           sarif_file: trivy-results.sarif
           category: trivy-image
 
       - name: Fail build on fixable CRITICAL or HIGH CVEs
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ steps.target.outputs.ref }}
           format: table
@@ -140,7 +144,7 @@ jobs:
           ignore-unfixed: true
 
       - name: Run Grype scan
-        uses: anchore/scan-action@v7
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7
         with:
           image: ${{ steps.target.outputs.ref }}
           fail-build: true
@@ -151,7 +155,7 @@ jobs:
       - name: Push to ECR
         id: push
         if: inputs.push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: src/app/
           push: true
@@ -165,7 +169,7 @@ jobs:
 
       - name: Install cosign
         if: inputs.push
-        uses: sigstore/cosign-installer@v4.1.2
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
       - name: Sign image
         # Signing by digest is what makes the signature meaningful. The previous
@@ -181,7 +185,7 @@ jobs:
 
       - name: Generate SBOM
         if: inputs.push
-        uses: anchore/sbom-action@v0
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
         with:
           image: ${{ steps.ecr-login.outputs.registry }}/${{ inputs.environment }}/api@${{ steps.push.outputs.digest }}
           format: spdx-json
@@ -201,7 +205,7 @@ jobs:
 
       - name: Upload SBOM artifact
         if: inputs.push
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: sbom-${{ steps.meta.outputs.version }}
           path: sbom.spdx.json

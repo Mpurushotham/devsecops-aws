@@ -28,7 +28,17 @@ while IFS= read -r ref; do
   repo=$(printf '%s' "$path" | cut -d/ -f2)
   slug="${owner}/${repo}"
 
-  if gh api "repos/${slug}/git/ref/tags/${tag}" >/dev/null 2>&1 \
+  # Actions are pinned to full commit SHAs, with the tag kept as a trailing
+  # comment. A SHA is verified by resolving the commit itself; a tag or branch
+  # by resolving the ref.
+  if printf '%s' "$tag" | grep -qE '^[0-9a-f]{40}$'; then
+    if gh api "repos/${slug}/commits/${tag}" >/dev/null 2>&1; then
+      printf '  ok       %s\n' "$ref"
+    else
+      printf '  MISSING  %s\n' "$ref"
+      status=1
+    fi
+  elif gh api "repos/${slug}/git/ref/tags/${tag}" >/dev/null 2>&1 \
     || gh api "repos/${slug}/git/ref/heads/${tag}" >/dev/null 2>&1; then
     printf '  ok       %s\n' "$ref"
   else
@@ -40,8 +50,9 @@ done <<<"$refs"
 if [ "$status" -ne 0 ]; then
   echo
   echo "One or more action references do not resolve upstream." >&2
-  echo "A common cause is omitting the 'v' prefix, or pinning a major tag" >&2
-  echo "(@v4) that the project does not publish as a moving tag." >&2
+  echo "A common cause is omitting the 'v' prefix, pinning a major tag (@v4)" >&2
+  echo "that the project does not publish as a moving tag, or a SHA that was" >&2
+  echo "force-pushed away." >&2
 fi
 
 exit "$status"

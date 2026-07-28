@@ -34,10 +34,9 @@ if ! command -v checkov &>/dev/null; then
   pip3 install checkov
 fi
 
-if ! command -v tfsec &>/dev/null; then
-  echo "Installing tfsec..."
-  brew install tfsec 2>/dev/null || curl -sSL https://raw.githubusercontent.com/aquasecurity/tfsec/master/scripts/install_linux.sh | bash
-fi
+# tfsec is not installed: it is end of life and its engine was folded into
+# Trivy, which is installed below and is what CI runs. See
+# docs/adr/0005-trivy-replaces-tfsec.md.
 
 if ! command -v trivy &>/dev/null; then
   echo "Installing trivy..."

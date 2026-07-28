@@ -9,6 +9,10 @@ on:
       image-tag:
         required: true
         type: string
+    secrets:
+      AWS_ACCOUNT_ID:
+        description: Account hosting the ECS cluster and the deploy role
+        required: true
   workflow_dispatch:
     inputs:
       environment:
@@ -37,10 +41,10 @@ jobs:
     environment: ${{ inputs.environment }}
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6
         with:
           role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ inputs.environment }}-cicd-deploy-role
           aws-region: ${{ env.AWS_REGION }}
@@ -48,34 +52,42 @@ jobs:
 
       - name: Record current task definition for rollback
         id: current
+        # Workflow inputs reach the script through env rather than by direct
+        # ${{ }} interpolation. Interpolated values are pasted into the shell
+        # before it runs, so an input containing shell metacharacters would be
+        # executed rather than read.
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
         run: |
           # Captured before the deploy so a failure can roll back to a known
           # good revision rather than force-redeploying the broken one.
           arn="$(aws ecs describe-services \
-            --cluster "${{ inputs.environment }}-cluster" \
-            --services "${{ inputs.environment }}-app-service" \
+            --cluster "${ENVIRONMENT}-cluster" \
+            --services "${ENVIRONMENT}-app-service" \
             --query 'services[0].taskDefinition' \
             --output text)"
           echo "task-definition=${arn}" >> "$GITHUB_OUTPUT"
           echo "Current task definition: ${arn}"
 
       - name: Download task definition
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
         run: |
           aws ecs describe-task-definition \
-            --task-definition "${{ inputs.environment }}-app" \
+            --task-definition "${ENVIRONMENT}-app" \
             --query taskDefinition \
             > task-def.json
 
       - name: Update task definition with new image
         id: task-def
-        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        uses: aws-actions/amazon-ecs-render-task-definition@138c24f321fdbdf7edee4a685519d253cae2cdea # v1
         with:
           task-definition: task-def.json
           container-name: app
           image: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ inputs.environment }}/api:${{ inputs.image-tag }}
 
       - name: Deploy to ECS
-        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        uses: aws-actions/amazon-ecs-deploy-task-definition@c465972ecbd160473f22e683363b422a5412a3de # v2
         with:
           task-definition: ${{ steps.task-def.outputs.task-definition }}
           service: ${{ inputs.environment }}-app-service
@@ -84,10 +96,12 @@ jobs:
           wait-for-minutes: 10
 
       - name: Verify running count
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
         run: |
           read -r running desired <<< "$(aws ecs describe-services \
-            --cluster "${{ inputs.environment }}-cluster" \
-            --services "${{ inputs.environment }}-app-service" \
+            --cluster "${ENVIRONMENT}-cluster" \
+            --services "${ENVIRONMENT}-app-service" \
             --query 'services[0].[runningCount,desiredCount]' \
             --output text)"
           echo "running=${running} desired=${desired}"
@@ -100,13 +114,16 @@ jobs:
 
       - name: Roll back on failure
         if: failure() && steps.current.outputs.task-definition != ''
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          PREVIOUS_TASK_DEF: ${{ steps.current.outputs.task-definition }}
         run: |
-          echo "Rolling back to ${{ steps.current.outputs.task-definition }}"
+          echo "Rolling back to ${PREVIOUS_TASK_DEF}"
           aws ecs update-service \
-            --cluster "${{ inputs.environment }}-cluster" \
-            --service "${{ inputs.environment }}-app-service" \
-            --task-definition "${{ steps.current.outputs.task-definition }}" \
+            --cluster "${ENVIRONMENT}-cluster" \
+            --service "${ENVIRONMENT}-app-service" \
+            --task-definition "${PREVIOUS_TASK_DEF}" \
             --force-new-deployment
           aws ecs wait services-stable \
-            --cluster "${{ inputs.environment }}-cluster" \
-            --services "${{ inputs.environment }}-app-service"
+            --cluster "${ENVIRONMENT}-cluster" \
+            --services "${ENVIRONMENT}-app-service"
