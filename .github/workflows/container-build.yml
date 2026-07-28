@@ -105,7 +105,7 @@ jobs:
           echo "ref=${tag}" >> "$GITHUB_OUTPUT"
 
       - name: Run Trivy vulnerability scan
-        uses: aquasecurity/trivy-action@0.33.1
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ steps.target.outputs.ref }}
           format: sarif
@@ -124,7 +124,7 @@ jobs:
           category: trivy-image
 
       - name: Fail build on fixable CRITICAL or HIGH CVEs
-        uses: aquasecurity/trivy-action@0.33.1
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ steps.target.outputs.ref }}
           format: table
@@ -165,7 +165,7 @@ jobs:
 
       - name: Install cosign
         if: inputs.push
-        uses: sigstore/cosign-installer@v4
+        uses: sigstore/cosign-installer@v4.1.2
 
       - name: Sign image
         # Signing by digest is what makes the signature meaningful. The previous
