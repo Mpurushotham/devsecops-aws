@@ -25,6 +25,38 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Whether the AWS side of this pipeline can run at all. Without
+  # AWS_ACCOUNT_ID the role ARN renders as arn:aws:iam:::role/... and
+  # configure-aws-credentials retries twelve times over two and a half minutes
+  # before failing with "Request ARN is invalid", which says nothing about the
+  # actual cause. This turns that into a clear skip.
+  aws-preflight:
+    name: AWS Configured?
+    runs-on: ubuntu-latest
+    outputs:
+      configured: ${{ steps.check.outputs.configured }}
+    steps:
+      - id: check
+        env:
+          ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+        run: |
+          if [ -n "${ACCOUNT_ID}" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+            echo "AWS_ACCOUNT_ID is set; build and deploy jobs will run." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "### AWS jobs skipped"
+              echo
+              echo "\`AWS_ACCOUNT_ID\` is not set, so image build/push and deploy are skipped."
+              echo
+              echo "To enable them:"
+              echo "1. \`./scripts/bootstrap.sh\` — creates the state backend and the GitHub OIDC provider"
+              echo "2. \`terraform apply\` in \`terraform/environments/dev\` — creates \`dev-cicd-deploy-role\`"
+              echo "3. \`gh secret set AWS_ACCOUNT_ID --body <account-id>\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   app-test:
     name: Application Tests
     runs-on: ubuntu-latest
@@ -70,7 +102,8 @@ jobs:
 
   build:
     name: Build & Scan Image
-    needs: app-test
+    needs: [app-test, aws-preflight]
+    if: needs.aws-preflight.outputs.configured == 'true'
     # push is false on pull requests: the image is built and scanned so the PR
     # gets a verdict, but nothing reaches ECR until the change is on a branch.
     uses: ./.github/workflows/container-build.yml
@@ -81,8 +114,8 @@ jobs:
 
   deploy-dev:
     name: Deploy Dev
-    needs: build
-    if: github.ref == 'refs/heads/develop' && github.event_name == 'push'
+    needs: [build, aws-preflight]
+    if: needs.aws-preflight.outputs.configured == 'true' && github.ref == 'refs/heads/develop' && github.event_name == 'push'
     uses: ./.github/workflows/ecs-deploy.yml
     with:
       environment: dev
@@ -91,8 +124,8 @@ jobs:
 
   deploy-prod:
     name: Deploy Production
-    needs: build
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: [build, aws-preflight]
+    if: needs.aws-preflight.outputs.configured == 'true' && github.ref == 'refs/heads/main' && github.event_name == 'push'
     uses: ./.github/workflows/ecs-deploy.yml
     with:
       environment: prod

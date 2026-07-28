@@ -20,12 +20,44 @@ permissions:
 env:
   TF_VERSION: 1.9.8
   AWS_REGION: us-east-1
+  # certificate_arn is a required variable with no default, by design: the ECS
+  # module has no plaintext listener. See docs/adr/0006-mandatory-tls.md.
+  TF_VAR_certificate_arn: ${{ secrets.ACM_CERTIFICATE_ARN }}
 
 concurrency:
   group: terraform-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Plan and apply need a real role. Without AWS_ACCOUNT_ID the ARN renders as
+  # arn:aws:iam:::role/... and the run fails with "Request ARN is invalid",
+  # which reads like a broken workflow rather than unconfigured credentials.
+  aws-preflight:
+    name: AWS Configured?
+    runs-on: ubuntu-latest
+    outputs:
+      configured: ${{ steps.check.outputs.configured }}
+    steps:
+      - id: check
+        env:
+          ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+        run: |
+          if [ -n "${ACCOUNT_ID}" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "### Terraform plan and apply skipped"
+              echo
+              echo "\`AWS_ACCOUNT_ID\` is not set. Validation, formatting and"
+              echo "linting still ran and still gate this pull request; only the"
+              echo "steps that need live credentials were skipped."
+              echo
+              echo "Enable with \`./scripts/bootstrap.sh\`, then apply"
+              echo "\`terraform/environments/dev\`, then set the secret."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   validate:
     name: Terraform Validate
     runs-on: ubuntu-latest
@@ -87,10 +119,12 @@ jobs:
   plan-dev:
     name: Plan Dev
     runs-on: ubuntu-latest
-    needs: validate
-    # Planning needs real credentials. Skip on forks, where OIDC secrets are
-    # unavailable, so the job is not a permanent red X on outside contributions.
-    if: github.event.pull_request.head.repo.full_name == github.repository || github.event_name == 'push'
+    needs: [validate, aws-preflight]
+    # Planning needs real credentials, which forks never have, and which this
+    # account does not have until bootstrap has run.
+    if: |
+      needs.aws-preflight.outputs.configured == 'true' &&
+      (github.event.pull_request.head.repo.full_name == github.repository || github.event_name == 'push')
     environment: dev
     steps:
       - uses: actions/checkout@v5
@@ -137,8 +171,8 @@ jobs:
   plan-staging:
     name: Plan Staging
     runs-on: ubuntu-latest
-    needs: validate
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: [validate, aws-preflight]
+    if: needs.aws-preflight.outputs.configured == 'true' && github.ref == 'refs/heads/main' && github.event_name == 'push'
     environment: staging
     steps:
       - uses: actions/checkout@v5
@@ -162,8 +196,8 @@ jobs:
   apply-dev:
     name: Apply Dev
     runs-on: ubuntu-latest
-    needs: validate
-    if: github.ref == 'refs/heads/develop' && github.event_name == 'push'
+    needs: [validate, aws-preflight]
+    if: needs.aws-preflight.outputs.configured == 'true' && github.ref == 'refs/heads/develop' && github.event_name == 'push'
     environment: dev
     steps:
       - uses: actions/checkout@v5
@@ -187,8 +221,8 @@ jobs:
   apply-prod:
     name: Apply Prod (Manual Approval)
     runs-on: ubuntu-latest
-    needs: plan-staging
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: [plan-staging, aws-preflight]
+    if: needs.aws-preflight.outputs.configured == 'true' && github.ref == 'refs/heads/main' && github.event_name == 'push'
     # The production environment must carry a required reviewer in repository
     # settings; that approval gate is what makes this job safe, not the name.
     environment: production
