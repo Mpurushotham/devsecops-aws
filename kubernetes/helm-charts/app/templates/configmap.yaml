@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "app.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "app.labels" . | nindent 4 }}
+data:
+  ENVIRONMENT: {{ .Values.environment | quote }}
+  AWS_REGION: {{ .Values.awsRegion | quote }}
+  APP_VERSION: {{ .Values.image.tag | default .Chart.AppVersion | quote }}
+  ALLOWED_ORIGINS: {{ .Values.config.allowedOrigins | quote }}
+  ALLOWED_HOSTS: {{ .Values.config.allowedHosts | quote }}

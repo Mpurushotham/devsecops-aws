@@ -9,3 +9,12 @@ variable "eks_cluster_version" {
   type        = string
   default     = "1.31"
 }
+
+variable "certificate_arn" {
+  description = <<-EOT
+    ACM certificate for the ALB HTTPS listener. Required: the ECS module has no
+    plaintext fallback. Issue one for the environment's hostname, or import a
+    self-signed certificate into ACM for a throwaway environment.
+  EOT
+  type        = string
+}

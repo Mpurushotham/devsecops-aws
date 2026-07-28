@@ -13,6 +13,16 @@ variable "private_subnet_ids" {
   type        = list(string)
 }
 
+variable "vpc_cidr_block" {
+  description = "CIDR of the VPC, used to scope task egress to interface endpoints instead of the internet"
+  type        = string
+}
+
+variable "s3_prefix_list_id" {
+  description = "Prefix list ID of the S3 gateway endpoint, so tasks can reach S3 without internet egress"
+  type        = string
+}
+
 variable "kms_key_arn" {
   description = "KMS key ARN for log encryption and secret decryption"
   type        = string
@@ -55,12 +65,17 @@ variable "max_capacity" {
 
 variable "certificate_arn" {
   description = <<-EOT
-    ACM certificate for the ALB HTTPS listener. When empty the module falls back
-    to a plaintext HTTP listener, which is only acceptable for an internal ALB in
-    a non-production environment that has no domain yet.
+    ACM certificate for the ALB HTTPS listener. Required in every environment.
+    There is deliberately no plaintext fallback: an optional one meant the
+    listener silently degraded to HTTP wherever the variable was left unset,
+    which is exactly where it would go unnoticed.
   EOT
   type        = string
-  default     = ""
+
+  validation {
+    condition     = can(regex("^arn:aws[a-z-]*:acm:", var.certificate_arn))
+    error_message = "certificate_arn must be an ACM certificate ARN. Issue one with modules/acm or import an existing certificate."
+  }
 }
 
 variable "access_logs_bucket" {
@@ -271,10 +286,23 @@ resource "aws_vpc_security_group_ingress_rule" "app_from_alb" {
   ip_protocol                  = "tcp"
 }
 
-resource "aws_vpc_security_group_egress_rule" "app_https" {
+# Egress is scoped to the VPC rather than 0.0.0.0/0. ECR, Secrets Manager,
+# CloudWatch and STS are all reached through the interface endpoints created in
+# the vpc module, and S3 through its gateway endpoint, so tasks never need a
+# route to the open internet.
+resource "aws_vpc_security_group_egress_rule" "app_https_vpc" {
   security_group_id = aws_security_group.app.id
-  description       = "HTTPS outbound for ECR pulls, Secrets Manager and CloudWatch"
-  cidr_ipv4         = "0.0.0.0/0"
+  description       = "HTTPS to VPC interface endpoints for ECR, Secrets Manager, logs and STS"
+  cidr_ipv4         = var.vpc_cidr_block
+  from_port         = 443
+  to_port           = 443
+  ip_protocol       = "tcp"
+}
+
+resource "aws_vpc_security_group_egress_rule" "app_https_s3" {
+  security_group_id = aws_security_group.app.id
+  description       = "HTTPS to S3 via the gateway endpoint prefix list"
+  prefix_list_id    = var.s3_prefix_list_id
   from_port         = 443
   to_port           = 443
   ip_protocol       = "tcp"
@@ -316,10 +344,7 @@ resource "aws_lb_target_group" "app" {
   }
 }
 
-# An HTTPS listener without certificate_arn is rejected by the API, so the
-# listener type follows whether a certificate was supplied.
 resource "aws_lb_listener" "https" {
-  count             = var.certificate_arn == "" ? 0 : 1
   load_balancer_arn = aws_lb.app.arn
   port              = 443
   protocol          = "HTTPS"
@@ -332,15 +357,22 @@ resource "aws_lb_listener" "https" {
   }
 }
 
-resource "aws_lb_listener" "http" {
-  count             = var.certificate_arn == "" ? 1 : 0
+# Port 80 exists only to redirect. It never forwards to the target group, so a
+# client that connects in plaintext is told to come back over TLS rather than
+# being served.
+resource "aws_lb_listener" "http_redirect" {
   load_balancer_arn = aws_lb.app.arn
   port              = 80
   protocol          = "HTTP"
 
   default_action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.app.arn
+    type = "redirect"
+
+    redirect {
+      port        = "443"
+      protocol    = "HTTPS"
+      status_code = "HTTP_301"
+    }
   }
 }
 
@@ -352,14 +384,27 @@ resource "aws_security_group" "alb" {
   tags = { Environment = var.environment }
 }
 
-resource "aws_vpc_security_group_ingress_rule" "alb_client" {
+resource "aws_vpc_security_group_ingress_rule" "alb_https" {
   for_each = toset(var.alb_ingress_cidrs)
 
   security_group_id = aws_security_group.alb.id
-  description       = "Internal client traffic"
+  description       = "Internal client HTTPS"
   cidr_ipv4         = each.value
-  from_port         = var.certificate_arn == "" ? 80 : 443
-  to_port           = var.certificate_arn == "" ? 80 : 443
+  from_port         = 443
+  to_port           = 443
+  ip_protocol       = "tcp"
+}
+
+# Allowed so the redirect above can actually be delivered; nothing is served
+# over this port.
+resource "aws_vpc_security_group_ingress_rule" "alb_http_redirect" {
+  for_each = toset(var.alb_ingress_cidrs)
+
+  security_group_id = aws_security_group.alb.id
+  description       = "Plaintext requests, answered with a redirect to HTTPS"
+  cidr_ipv4         = each.value
+  from_port         = 80
+  to_port           = 80
   ip_protocol       = "tcp"
 }
 

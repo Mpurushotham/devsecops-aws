@@ -82,6 +82,17 @@ resource "aws_kms_key" "main" {
         Action    = ["kms:GenerateDataKey*", "kms:DescribeKey", "kms:Decrypt"]
         Resource  = "*"
       },
+      # EventBridge publishes Security Hub findings to an SNS topic encrypted
+      # with this key, so both principals need to generate data keys.
+      {
+        Sid    = "Allow SNS and EventBridge"
+        Effect = "Allow"
+        Principal = {
+          Service = ["sns.amazonaws.com", "events.amazonaws.com"]
+        }
+        Action   = ["kms:GenerateDataKey*", "kms:Decrypt", "kms:DescribeKey"]
+        Resource = "*"
+      },
       # EKS envelope encryption of Kubernetes secrets and EBS volume encryption
       # both go through the autoscaling and EKS service principals.
       {

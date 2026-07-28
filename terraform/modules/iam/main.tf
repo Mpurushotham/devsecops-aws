@@ -12,13 +12,60 @@ resource "aws_iam_policy" "permission_boundary" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid      = "AllowRegionalServices"
-        Effect   = "Allow"
-        Action   = ["ec2:*", "ecs:*", "eks:*", "s3:*", "rds:*", "lambda:*", "logs:*", "cloudwatch:*", "secretsmanager:GetSecretValue", "kms:Decrypt", "kms:GenerateDataKey", "ssm:GetParameter*", "ecr:*"]
+        Sid    = "AllowRegionalServices"
+        Effect = "Allow"
+        # s3:* previously appeared here. A boundary is a ceiling, so a wildcard
+        # meant any role attached to it could also delete buckets and rewrite
+        # bucket policies, including the ones holding CloudTrail evidence.
+        # Enumerated instead, deliberately excluding s3:Delete* and the
+        # policy-mutating calls.
+        Action = [
+          "ec2:*",
+          "ecs:*",
+          "eks:*",
+          "rds:*",
+          "lambda:*",
+          "logs:*",
+          "cloudwatch:*",
+          "ecr:*",
+          "s3:GetObject",
+          "s3:GetObjectVersion",
+          "s3:PutObject",
+          "s3:ListBucket",
+          "s3:GetBucketLocation",
+          "s3:ListBucketMultipartUploads",
+          "s3:AbortMultipartUpload",
+          "secretsmanager:GetSecretValue",
+          "kms:Decrypt",
+          "kms:GenerateDataKey",
+          "ssm:GetParameter*",
+        ]
         Resource = "*"
         Condition = {
           StringEquals = { "aws:RequestedRegion" = data.aws_region.current.name }
         }
+      },
+      # Explicit deny so no identity-based policy under this boundary can grant
+      # the ability to tamper with or delete audit evidence.
+      {
+        Sid    = "DenyAuditLogTampering"
+        Effect = "Deny"
+        Action = [
+          "s3:DeleteBucket",
+          "s3:DeleteBucketPolicy",
+          "s3:PutBucketPolicy",
+          "s3:PutBucketLogging",
+          "s3:PutBucketVersioning",
+          "cloudtrail:StopLogging",
+          "cloudtrail:DeleteTrail",
+          "cloudtrail:UpdateTrail",
+          "config:DeleteConfigurationRecorder",
+          "config:StopConfigurationRecorder",
+          "guardduty:DeleteDetector",
+          "guardduty:UpdateDetector",
+          "securityhub:DisableSecurityHub",
+        ]
+        Resource = "*"
       },
       {
         Sid    = "DenyIAMEscalation"

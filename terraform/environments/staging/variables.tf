@@ -12,10 +12,8 @@ variable "eks_cluster_version" {
 
 variable "certificate_arn" {
   description = <<-EOT
-    ACM certificate for the ALB HTTPS listener. Empty falls back to a plaintext
-    HTTP listener on the internal ALB, which is acceptable only until a domain
-    is issued for this environment.
+    ACM certificate for the ALB HTTPS listener. Required: the ECS module has no
+    plaintext fallback.
   EOT
   type        = string
-  default     = ""
 }

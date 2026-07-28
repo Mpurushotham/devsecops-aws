@@ -215,6 +215,57 @@ resource "aws_vpc_endpoint" "dynamodb" {
   tags = { Name = "${var.environment}-dynamodb-endpoint" }
 }
 
+# Interface endpoints are what let workload security groups restrict egress to
+# the VPC CIDR instead of 0.0.0.0/0. Without them every task and node needs a
+# route to the open internet just to call an AWS API.
+resource "aws_security_group" "endpoints" {
+  name        = "${var.environment}-vpc-endpoints"
+  description = "Interface VPC endpoints for ${var.environment}"
+  vpc_id      = aws_vpc.main.id
+
+  tags = { Name = "${var.environment}-vpc-endpoints" }
+}
+
+resource "aws_vpc_security_group_ingress_rule" "endpoints_https" {
+  security_group_id = aws_security_group.endpoints.id
+  description       = "HTTPS from inside the VPC"
+  cidr_ipv4         = aws_vpc.main.cidr_block
+  from_port         = 443
+  to_port           = 443
+  ip_protocol       = "tcp"
+}
+
+locals {
+  # ecr.api is the control plane call, ecr.dkr the layer download, and both are
+  # needed for a pull. logs, secretsmanager and sts cover the task execution
+  # role's remaining calls; ssm and ec2messages back Session Manager.
+  interface_endpoints = [
+    "ecr.api",
+    "ecr.dkr",
+    "logs",
+    "secretsmanager",
+    "sts",
+    "ssm",
+    "ssmmessages",
+    "ec2messages",
+    "elasticloadbalancing",
+    "eks",
+  ]
+}
+
+resource "aws_vpc_endpoint" "interface" {
+  for_each = toset(local.interface_endpoints)
+
+  vpc_id              = aws_vpc.main.id
+  service_name        = "com.amazonaws.${data.aws_region.current.name}.${each.value}"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = aws_subnet.private[*].id
+  security_group_ids  = [aws_security_group.endpoints.id]
+  private_dns_enabled = true
+
+  tags = { Name = "${var.environment}-${replace(each.value, ".", "-")}-endpoint" }
+}
+
 # --- Flow logs ---
 
 resource "aws_cloudwatch_log_group" "flow_logs" {
@@ -296,4 +347,14 @@ output "nat_gateway_ips" {
 output "flow_log_group_name" {
   description = "CloudWatch log group receiving VPC flow logs"
   value       = aws_cloudwatch_log_group.flow_logs.name
+}
+
+output "s3_prefix_list_id" {
+  description = "Prefix list of the S3 gateway endpoint, for scoping egress rules to S3"
+  value       = aws_vpc_endpoint.s3.prefix_list_id
+}
+
+output "vpc_endpoint_security_group_id" {
+  description = "Security group fronting the interface endpoints"
+  value       = aws_security_group.endpoints.id
 }

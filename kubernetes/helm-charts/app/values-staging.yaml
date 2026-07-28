@@ -1,0 +1,28 @@
+# Staging overlay. Mirrors production topology so scheduling and spread
+# failures surface here rather than in production.
+environment: staging
+
+image:
+  repository: 113897201107.dkr.ecr.us-east-1.amazonaws.com/staging/api
+  pullPolicy: IfNotPresent
+
+replicaCount: 3
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 8
+
+resources:
+  requests:
+    cpu: 200m
+    memory: 256Mi
+  limits:
+    memory: 768Mi
+
+config:
+  allowedHosts: '*'
+
+topologySpreadConstraints:
+  enabled: true
+  whenUnsatisfiable: DoNotSchedule

@@ -1,0 +1,18 @@
+# Accepted Trivy findings.
+#
+# Every entry here is a deliberate decision with a stated reason and an owner.
+# An entry without a justification is a bug, not a suppression: if a finding
+# cannot be justified in a sentence, fix the finding instead.
+
+misconfigurations:
+  - id: AVD-AWS-0104
+    statement: >-
+      EKS worker nodes keep egress to 0.0.0.0/0 on TCP 443 only. AWS-facing
+      traffic already goes through the interface endpoints created in
+      modules/vpc, but nodes still pull from registries AWS does not front with
+      an endpoint (upstream Helm charts, ghcr.io, quay.io, Docker Hub) and reach
+      Sigstore and the OIDC endpoints used to verify image signatures. Closing
+      this requires mirroring every third-party image into ECR first, which is
+      the intended end state and is tracked in docs/adr/0007-network-egress.md.
+      All other egress in the platform is scoped to the VPC CIDR or a prefix
+      list.

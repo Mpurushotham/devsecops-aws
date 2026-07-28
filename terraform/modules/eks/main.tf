@@ -18,6 +18,11 @@ variable "subnet_ids" {
   type        = list(string)
 }
 
+variable "vpc_cidr_block" {
+  description = "CIDR of the VPC, used to scope node egress to interface endpoints instead of the internet"
+  type        = string
+}
+
 variable "kms_key_arn" {
   description = "KMS key ARN used for envelope encryption of Kubernetes secrets and the log group"
   type        = string
@@ -138,11 +143,24 @@ resource "aws_security_group" "cluster" {
   tags = { Name = "${local.cluster_name}-control-plane" }
 }
 
-resource "aws_vpc_security_group_egress_rule" "cluster_all" {
-  security_group_id = aws_security_group.cluster.id
-  description       = "Control plane egress to nodes and AWS APIs"
-  ip_protocol       = "-1"
-  cidr_ipv4         = "0.0.0.0/0"
+# Scoped to the node group rather than 0.0.0.0/0: the control plane only ever
+# needs to reach kubelets and extension API servers running on the nodes.
+resource "aws_vpc_security_group_egress_rule" "cluster_to_nodes" {
+  security_group_id            = aws_security_group.cluster.id
+  description                  = "Control plane to kubelet and extension API servers"
+  referenced_security_group_id = aws_security_group.node.id
+  from_port                    = 1025
+  to_port                      = 65535
+  ip_protocol                  = "tcp"
+}
+
+resource "aws_vpc_security_group_egress_rule" "cluster_to_nodes_https" {
+  security_group_id            = aws_security_group.cluster.id
+  description                  = "Control plane to webhooks served over 443 on nodes"
+  referenced_security_group_id = aws_security_group.node.id
+  from_port                    = 443
+  to_port                      = 443
+  ip_protocol                  = "tcp"
 }
 
 resource "aws_vpc_security_group_ingress_rule" "cluster_from_nodes" {
@@ -200,11 +218,46 @@ resource "aws_security_group" "node" {
   tags = { Name = "${local.cluster_name}-nodes" }
 }
 
-resource "aws_vpc_security_group_egress_rule" "node_all" {
+resource "aws_vpc_security_group_egress_rule" "node_https_vpc" {
   security_group_id = aws_security_group.node.id
-  description       = "Node egress for image pulls and AWS APIs via NAT"
-  ip_protocol       = "-1"
+  description       = "HTTPS to VPC interface endpoints for ECR, STS, logs and the EKS API"
+  cidr_ipv4         = var.vpc_cidr_block
+  from_port         = 443
+  to_port           = 443
+  ip_protocol       = "tcp"
+}
+
+resource "aws_vpc_security_group_egress_rule" "node_dns_udp" {
+  security_group_id = aws_security_group.node.id
+  description       = "DNS resolution inside the VPC"
+  cidr_ipv4         = var.vpc_cidr_block
+  from_port         = 53
+  to_port           = 53
+  ip_protocol       = "udp"
+}
+
+resource "aws_vpc_security_group_egress_rule" "node_dns_tcp" {
+  security_group_id = aws_security_group.node.id
+  description       = "DNS resolution inside the VPC over TCP"
+  cidr_ipv4         = var.vpc_cidr_block
+  from_port         = 53
+  to_port           = 53
+  ip_protocol       = "tcp"
+}
+
+# trivy:ignore:AWS-0104
+# Kept deliberately, and narrowed to 443. Nodes pull from registries AWS does
+# not front with an endpoint (upstream Helm charts, ghcr.io, quay.io, Docker
+# Hub) and reach the OIDC and Sigstore endpoints used to verify signatures.
+# Removing this would require mirroring every third-party image into ECR first,
+# which is the right end state but is not the topology this platform describes.
+resource "aws_vpc_security_group_egress_rule" "node_https_internet" {
+  security_group_id = aws_security_group.node.id
+  description       = "HTTPS to third-party registries and Sigstore, via NAT"
   cidr_ipv4         = "0.0.0.0/0"
+  from_port         = 443
+  to_port           = 443
+  ip_protocol       = "tcp"
 }
 
 resource "aws_vpc_security_group_ingress_rule" "node_from_cluster" {

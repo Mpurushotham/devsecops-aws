@@ -11,10 +11,6 @@ variable "eks_cluster_version" {
 }
 
 variable "certificate_arn" {
-  description = <<-EOT
-    ACM certificate for the ALB HTTPS listener. Production must set this: an
-    empty value drops the load balancer back to a plaintext HTTP listener.
-  EOT
+  description = "ACM certificate for the ALB HTTPS listener. Required: the ECS module has no plaintext fallback."
   type        = string
-  default     = ""
 }

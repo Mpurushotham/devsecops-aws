@@ -92,6 +92,7 @@ module "aws_config" {
 module "security_hub" {
   source      = "../../modules/security-hub"
   environment = local.environment
+  kms_key_arn = module.kms.key_arn
 }
 
 module "guardduty" {
@@ -117,6 +118,7 @@ module "eks" {
   cluster_version = var.eks_cluster_version
   vpc_id          = module.vpc.vpc_id
   subnet_ids      = module.vpc.private_subnet_ids
+  vpc_cidr_block  = module.vpc.vpc_cidr_block
   kms_key_arn     = module.kms.key_arn
 
   node_desired_size = 2
@@ -129,6 +131,8 @@ module "ecs" {
   environment        = local.environment
   vpc_id             = module.vpc.vpc_id
   private_subnet_ids = module.vpc.private_subnet_ids
+  vpc_cidr_block     = module.vpc.vpc_cidr_block
+  s3_prefix_list_id  = module.vpc.s3_prefix_list_id
   kms_key_arn        = module.kms.key_arn
   app_image          = "${module.ecr.repository_urls["api"]}:latest"
   access_logs_bucket = module.s3_logs.bucket_id
