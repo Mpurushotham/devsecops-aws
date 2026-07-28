@@ -1,38 +1,53 @@
 """
 Sample FastAPI application demonstrating secure coding practices.
 """
-from fastapi import FastAPI, HTTPException, Depends, status
+
+import json
+import logging
+import os
+
+import boto3
+from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, validator
-from typing import Optional
-import logging
-import os
-import boto3
-import json
+from pydantic import BaseModel, field_validator
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="DevSecOps Sample API",
-    docs_url=None,       # disable swagger in prod
+    docs_url=None,  # disable swagger in prod
     redoc_url=None,
     openapi_url=None,
 )
 
-app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*"])
+ENVIRONMENT = os.environ.get("ENVIRONMENT", "dev")
+AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
+
+# "".split(",") returns [""], which registers an empty string as an allowed
+# origin instead of allowing none. Filter so an unset variable means no
+# cross-origin access rather than one malformed entry.
+ALLOWED_ORIGINS = [
+    origin.strip() for origin in os.environ.get("ALLOWED_ORIGINS", "").split(",") if origin.strip()
+]
+
+# TrustedHostMiddleware with ["*"] accepts any Host header, which leaves the
+# service open to Host header poisoning behind a proxy. Set ALLOWED_HOSTS per
+# environment; the wildcard remains only as the local development default.
+ALLOWED_HOSTS = [
+    host.strip() for host in os.environ.get("ALLOWED_HOSTS", "*").split(",") if host.strip()
+]
+
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=ALLOWED_HOSTS)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.environ.get("ALLOWED_ORIGINS", "").split(","),
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=False,
     allow_methods=["GET", "POST"],
     allow_headers=["Content-Type", "X-Request-ID"],
 )
-
-ENVIRONMENT = os.environ.get("ENVIRONMENT", "dev")
-AWS_REGION  = os.environ.get("AWS_REGION", "us-east-1")
 
 
 class HealthResponse(BaseModel):
@@ -43,10 +58,11 @@ class HealthResponse(BaseModel):
 
 class ItemRequest(BaseModel):
     name: str
-    description: Optional[str] = None
+    description: str | None = None
 
-    @validator("name")
-    def name_must_be_safe(cls, v):
+    @field_validator("name")
+    @classmethod
+    def name_must_be_safe(cls, v: str) -> str:
         if len(v) > 100:
             raise ValueError("name too long")
         forbidden = ["<", ">", "&", "'", '"', ";", "--", "/*"]

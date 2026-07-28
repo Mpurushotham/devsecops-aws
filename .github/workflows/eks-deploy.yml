@@ -9,6 +9,11 @@ on:
       image-tag:
         required: true
         type: string
+      chart:
+        description: Path to the Helm chart to deploy
+        required: false
+        default: kubernetes/helm-charts/app
+        type: string
   workflow_dispatch:
     inputs:
       environment:
@@ -18,6 +23,11 @@ on:
       image-tag:
         required: true
         type: string
+      chart:
+        description: Path to the Helm chart to deploy
+        required: false
+        default: kubernetes/helm-charts/app
+        type: string
 
 permissions:
   contents: read
@@ -26,6 +36,12 @@ permissions:
 env:
   AWS_REGION: us-east-1
 
+concurrency:
+  # Two overlapping Helm releases against one cluster leave the release in a
+  # pending state that needs manual rollback, so serialise per environment.
+  group: eks-deploy-${{ inputs.environment }}
+  cancel-in-progress: false
+
 jobs:
   deploy-eks:
     name: Deploy to EKS (${{ inputs.environment }})
@@ -33,62 +49,94 @@ jobs:
     environment: ${{ inputs.environment }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ inputs.environment }}-cicd-deploy-role
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: EKSDeploy
 
       - name: Setup kubectl
-        uses: azure/setup-kubectl@v3
+        uses: azure/setup-kubectl@v5
 
       - name: Setup Helm
-        uses: azure/setup-helm@v3
+        uses: azure/setup-helm@v5
         with:
-          version: '3.13.0'
+          version: v3.16.3
 
       - name: Update kubeconfig
         run: |
           aws eks update-kubeconfig \
-            --region ${{ env.AWS_REGION }} \
-            --name ${{ inputs.environment }}-cluster
+            --region "${AWS_REGION}" \
+            --name "${{ inputs.environment }}-cluster"
 
       - name: Verify cluster access
         run: kubectl cluster-info
 
-      - name: Install/Upgrade via Helm
+      - name: Resolve values file
+        id: values
         run: |
-          helm upgrade --install app kubernetes/helm-charts/app \
-            --namespace ${{ inputs.environment }} \
+          # Fall back to the chart defaults when no per-environment overlay
+          # exists, instead of failing on a missing --values path.
+          candidate="${{ inputs.chart }}/values-${{ inputs.environment }}.yaml"
+          if [ -f "${candidate}" ]; then
+            echo "args=--values ${candidate}" >> "$GITHUB_OUTPUT"
+          else
+            echo "No ${candidate}, using chart defaults"
+            echo "args=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install or upgrade via Helm
+        run: |
+          helm upgrade --install app "${{ inputs.chart }}" \
+            --namespace "${{ inputs.environment }}" \
             --create-namespace \
-            --set image.tag=${{ inputs.image-tag }} \
-            --set environment=${{ inputs.environment }} \
-            --values kubernetes/helm-charts/app/values-${{ inputs.environment }}.yaml \
+            --set image.tag="${{ inputs.image-tag }}" \
+            --set environment="${{ inputs.environment }}" \
+            ${{ steps.values.outputs.args }} \
             --wait \
-            --timeout 5m \
+            --timeout 10m \
             --atomic
 
-      - name: Verify deployment
+      - name: Verify rollout
         run: |
-          kubectl rollout status deployment/app -n ${{ inputs.environment }}
-          kubectl get pods -n ${{ inputs.environment }}
+          # The chart names the deployment <release>-app, so the release name
+          # has to be part of the selector here.
+          kubectl rollout status "deployment/app-app" \
+            --namespace "${{ inputs.environment }}" \
+            --timeout=5m
+          kubectl get pods --namespace "${{ inputs.environment }}" -o wide
 
-      - name: Run smoke tests
+      - name: Run smoke test
         run: |
-          SERVICE_URL=$(kubectl get svc app -n ${{ inputs.environment }} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
-          curl -sf "http://${SERVICE_URL}/health" || exit 1
+          # Reach the service from inside the cluster: the ingress is internal
+          # and an ALB hostname is not resolvable from a hosted runner.
+          kubectl run smoke-test-${{ github.run_id }} \
+            --namespace "${{ inputs.environment }}" \
+            --image=curlimages/curl:8.11.1 \
+            --restart=Never \
+            --rm \
+            --attach \
+            --quiet \
+            --command -- curl -sSf --max-time 10 "http://app-app.${{ inputs.environment }}.svc.cluster.local/health"
 
-      - name: Notify on failure
+      - name: Report failure
         if: failure()
-        uses: actions/github-script@v7
-        with:
-          script: |
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: `EKS deployment to **${{ inputs.environment }}** FAILED. Image: \`${{ inputs.image-tag }}\``
-            });
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The previous version called issues.createComment with
+          # context.issue.number, which is undefined on workflow_dispatch and
+          # workflow_call, so the notification itself threw.
+          gh issue create \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "EKS deploy to ${{ inputs.environment }} failed (${{ inputs.image-tag }})" \
+            --label "deployment,incident" \
+            --body "Helm release \`app\` failed to reach a healthy state in \`${{ inputs.environment }}\`.
+
+          Image tag: \`${{ inputs.image-tag }}\`
+          Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+
+          \`--atomic\` will have rolled the release back to the previous revision."

@@ -1,0 +1,69 @@
+version: 2
+
+updates:
+  # Application dependencies. Grouped so one PR carries the whole set rather
+  # than one PR per package, which is what made the previous configuration
+  # noisy enough to be ignored.
+  - package-ecosystem: pip
+    directory: /src/app
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - python
+    groups:
+      python-runtime:
+        applies-to: version-updates
+        patterns: ['*']
+        exclude-patterns: ['pytest*', 'ruff', 'bandit', 'httpx']
+      python-dev:
+        applies-to: version-updates
+        patterns: ['pytest*', 'ruff', 'bandit', 'httpx']
+      python-security:
+        applies-to: security-updates
+        patterns: ['*']
+
+  # Actions are the most privileged part of this repository: they hold the OIDC
+  # role and can push images, so pinned versions must not be allowed to rot.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - ci
+    groups:
+      actions:
+        patterns: ['*']
+
+  - package-ecosystem: docker
+    directory: /src/app
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+    labels:
+      - dependencies
+      - docker
+
+  - package-ecosystem: terraform
+    directories:
+      - /terraform/modules/*
+      - /terraform/environments/*
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - terraform
+    groups:
+      terraform-providers:
+        patterns: ['*']

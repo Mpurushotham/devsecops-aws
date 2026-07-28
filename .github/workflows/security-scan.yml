@@ -6,20 +6,25 @@ on:
   pull_request:
     branches: [main]
   schedule:
-    - cron: '0 2 * * *'  # Daily at 2am UTC
+    - cron: '0 2 * * *' # Daily at 2am UTC
 
 permissions:
   contents: read
   security-events: write
   actions: read
 
+concurrency:
+  group: security-scan-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   secret-scan:
     name: Secret Detection (GitLeaks)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
+          # GitLeaks scans history, not just the tip, so it needs every commit.
           fetch-depth: 0
       - name: Run GitLeaks
         uses: gitleaks/gitleaks-action@v2
@@ -33,103 +38,176 @@ jobs:
     container:
       image: semgrep/semgrep
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Run Semgrep SAST
-        run: semgrep scan --config=auto --sarif > semgrep.sarif
+        # Findings are triaged from the SARIF in the code scanning UI, so the
+        # gate here is that the scan completed, not that it was silent.
+        run: semgrep scan --config=auto --sarif --output semgrep.sarif
         env:
           SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
       - name: Upload SARIF
         uses: github/codeql-action/upload-sarif@v3
+        if: always()
         with:
           sarif_file: semgrep.sarif
-        if: always()
+          category: semgrep
 
   iac-checkov:
     name: IaC Scan (Checkov)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Run Checkov on Terraform
         uses: bridgecrewio/checkov-action@v12
         with:
           directory: terraform/
           framework: terraform
-          output_format: sarif
-          output_file_path: checkov.sarif
+          output_format: cli,sarif
+          output_file_path: console,checkov.sarif
           soft_fail: false
-          skip_check: CKV_AWS_115,CKV_AWS_116
+          # CKV_AWS_115/116: Lambda reserved concurrency and DLQ, not applicable
+          # to the event-driven remediation handlers here.
+          # CKV_AWS_144: cross-region bucket replication, deliberately out of
+          # scope for a single-region reference platform.
+          skip_check: CKV_AWS_115,CKV_AWS_116,CKV_AWS_144
       - name: Upload SARIF
         uses: github/codeql-action/upload-sarif@v3
+        if: always()
         with:
           sarif_file: checkov.sarif
-        if: always()
+          category: checkov
 
-  iac-tfsec:
-    name: IaC Scan (tfsec)
+  iac-trivy:
+    # Replaces the previous tfsec job. tfsec is end of life and was folded into
+    # Trivy, and aquasecurity/tfsec-action no longer runs at all.
+    name: IaC Scan (Trivy)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Run tfsec
-        uses: aquasecurity/tfsec-action@v1.0.0
+      - uses: actions/checkout@v5
+      - name: Run Trivy config scan
+        uses: aquasecurity/trivy-action@0.33.1
         with:
-          working_directory: terraform/
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          scan-type: config
+          scan-ref: terraform/
           format: sarif
-          sarif_file: tfsec.sarif
-          soft_fail: false
+          output: trivy-iac.sarif
+          severity: CRITICAL,HIGH,MEDIUM
+          exit-code: '0'
       - name: Upload SARIF
         uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: tfsec.sarif
         if: always()
+        with:
+          sarif_file: trivy-iac.sarif
+          category: trivy-iac
+      - name: Fail on CRITICAL or HIGH misconfiguration
+        uses: aquasecurity/trivy-action@0.33.1
+        with:
+          scan-type: config
+          scan-ref: terraform/
+          format: table
+          severity: CRITICAL,HIGH
+          exit-code: '1'
 
   dependency-scan:
     name: Dependency Vulnerability Scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Run OWASP Dependency Check
-        uses: dependency-check/Dependency-Check_Action@main
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
-          project: devsecops-aws
-          path: src/
-          format: SARIF
-          args: --enableRetired
-      - name: Upload SARIF
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: reports/dependency-check-report.sarif
-        if: always()
+          python-version: '3.12'
+      - name: Audit Python dependencies
+        run: |
+          python -m pip install --upgrade pip pip-audit
+          status=0
+          while IFS= read -r req; do
+            echo "::group::pip-audit ${req}"
+            pip-audit --requirement "${req}" --strict --progress-spinner off || status=1
+            echo "::endgroup::"
+          done < <(find src app -name requirements.txt -not -path '*/node_modules/*' 2>/dev/null)
+          exit "${status}"
 
   codeql:
     name: CodeQL Analysis
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        language: [python, javascript]
+        # javascript was previously in this matrix and always failed: there is
+        # no JavaScript in this repository for CodeQL to build a database from.
+        language: [python]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v3
         with:
           languages: ${{ matrix.language }}
-      - name: Autobuild
-        uses: github/codeql-action/autobuild@v3
       - name: Run CodeQL Analysis
         uses: github/codeql-action/analyze@v3
         with:
           category: /language:${{ matrix.language }}
 
   kubernetes-scan:
-    name: Kubernetes Manifest Scan (Kubesec)
+    name: Kubernetes Manifest Scan
+    runs-on: ubuntu-latest
+    env:
+      POLARIS_VERSION: 10.2.1
+      KUBECONFORM_VERSION: 0.8.0
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install kubeconform and Polaris
+        # The previous job used fairwindsops/polaris/.github/actions/polaris@master,
+        # which does not resolve, so it failed during "Set up job" every run.
+        run: |
+          curl -sSfL "https://github.com/yannh/kubeconform/releases/download/v${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
+            | tar -xz -C /usr/local/bin kubeconform
+          curl -sSfL "https://github.com/FairwindsOps/polaris/releases/download/${POLARIS_VERSION}/polaris_linux_amd64.tar.gz" \
+            | tar -xz -C /usr/local/bin polaris
+
+      - name: Validate manifests against Kubernetes schemas
+        run: |
+          kubeconform -strict -summary -ignore-missing-schemas \
+            -schema-location default \
+            kubernetes/manifests/
+
+      - name: Run Polaris audit
+        run: |
+          polaris audit \
+            --audit-path kubernetes/ \
+            --format pretty \
+            --set-exit-code-on-danger \
+            --set-exit-code-below-score 85
+
+  helm-lint:
+    name: Helm Chart Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Run Kubesec
-        run: |
-          curl -sSX POST --data-binary @kubernetes/manifests/pod-security/pod-security-standards.yaml \
-            https://v2.kubesec.io/scan | jq '.[] | select(.score < 0)' && exit 1 || true
-      - name: Run Polaris
-        uses: fairwindsops/polaris/.github/actions/polaris@master
+      - uses: actions/checkout@v5
+      - uses: azure/setup-helm@v5
         with:
-          workingDir: kubernetes/
+          version: v3.16.3
+      - name: Lint and render every environment's values
+        run: |
+          for chart in kubernetes/helm-charts/*/; do
+            echo "::group::${chart}"
+            helm lint "${chart}"
+            for values in "${chart}"values-*.yaml; do
+              [ -e "${values}" ] || continue
+              echo "Rendering with ${values}"
+              helm template release "${chart}" --values "${values}" > /dev/null
+            done
+            echo "::endgroup::"
+          done
+
+  workflow-lint:
+    name: Workflow Lint (actionlint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Run actionlint
+        # Catches the class of bug that let a non-resolving action reference and
+        # a quoted heredoc sit in these workflows undetected for months.
+        run: |
+          bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          ./actionlint -color

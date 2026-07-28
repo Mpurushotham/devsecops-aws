@@ -1,15 +1,36 @@
 name: Container Build & Push
 
 on:
-  push:
-    branches: [main, develop]
-    paths:
-      - 'src/app/**'
-      - '.github/workflows/container-build.yml'
-  pull_request:
-    branches: [main]
-    paths:
-      - 'src/app/**'
+  # Called by devsecops-pipeline.yml rather than triggered directly, so a single
+  # push does not build the same image twice under two workflow names.
+  workflow_call:
+    inputs:
+      environment:
+        description: Environment whose ECR namespace receives the image
+        required: false
+        default: dev
+        type: string
+      push:
+        description: Publish the image after it passes every scan
+        required: false
+        default: false
+        type: boolean
+    outputs:
+      image-tag:
+        description: Short SHA tag applied to the image
+        value: ${{ jobs.build-and-scan.outputs.image-tag }}
+      image-digest:
+        description: Digest of the published image, empty when push was false
+        value: ${{ jobs.build-and-scan.outputs.image-digest }}
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: choice
+        options: [dev, staging, prod]
+        required: true
+      push:
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -18,7 +39,10 @@ permissions:
 
 env:
   AWS_REGION: us-east-1
-  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
+
+concurrency:
+  group: container-build-${{ github.ref }}-${{ inputs.environment }}
+  cancel-in-progress: false
 
 jobs:
   build-and-scan:
@@ -26,18 +50,18 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       image-tag: ${{ steps.meta.outputs.version }}
-      image-digest: ${{ steps.build.outputs.digest }}
+      image-digest: ${{ steps.push.outputs.digest }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
       - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
-          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/dev-cicd-deploy-role
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ inputs.environment }}-cicd-deploy-role
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: GitHubActions-ContainerBuild
 
@@ -49,15 +73,17 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.ECR_REGISTRY }}/dev/api
+          images: ${{ steps.ecr-login.outputs.registry }}/${{ inputs.environment }}/api
           tags: |
             type=sha,prefix=,suffix=,format=short
             type=ref,event=branch
             type=semver,pattern={{version}}
 
-      - name: Build image (no push yet)
+      # Build once into the local daemon so the scanners have something to
+      # inspect before anything is published.
+      - name: Build image for scanning
         id: build
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: src/app/
           push: false
@@ -70,49 +96,53 @@ jobs:
             BUILD_DATE=${{ github.event.head_commit.timestamp }}
             VCS_REF=${{ github.sha }}
 
+      - name: Resolve scan target
+        id: target
+        run: |
+          # metadata-action emits a newline-separated list; the scanners take one
+          # reference, so pin them to the first tag that was actually loaded.
+          tag="$(printf '%s\n' "${{ steps.meta.outputs.tags }}" | head -n1)"
+          echo "ref=${tag}" >> "$GITHUB_OUTPUT"
+
       - name: Run Trivy vulnerability scan
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@0.33.1
         with:
-          image-ref: ${{ env.ECR_REGISTRY }}/dev/api:${{ steps.meta.outputs.version }}
+          image-ref: ${{ steps.target.outputs.ref }}
           format: sarif
           output: trivy-results.sarif
           severity: CRITICAL,HIGH
-          exit-code: 1
+          exit-code: '0'
           ignore-unfixed: false
 
       - name: Upload Trivy SARIF
         uses: github/codeql-action/upload-sarif@v3
+        if: always()
         with:
           sarif_file: trivy-results.sarif
-        if: always()
+          category: trivy-image
+
+      - name: Fail build on CRITICAL or HIGH CVEs
+        uses: aquasecurity/trivy-action@0.33.1
+        with:
+          image-ref: ${{ steps.target.outputs.ref }}
+          format: table
+          severity: CRITICAL,HIGH
+          exit-code: '1'
+          ignore-unfixed: false
 
       - name: Run Grype scan
-        uses: anchore/scan-action@v3
+        uses: anchore/scan-action@v7
         with:
-          image: ${{ env.ECR_REGISTRY }}/dev/api:${{ steps.meta.outputs.version }}
+          image: ${{ steps.target.outputs.ref }}
           fail-build: true
           severity-cutoff: high
 
-      - name: Verify image with Docker Scout
-        run: |
-          docker scout cves ${{ env.ECR_REGISTRY }}/dev/api:${{ steps.meta.outputs.version }} \
-            --exit-code --only-severity critical
-        continue-on-error: true
-
-      - name: Sign image with cosign
-        uses: sigstore/cosign-installer@v3
-        if: github.ref == 'refs/heads/main'
-      - name: Cosign sign
-        if: github.ref == 'refs/heads/main'
-        run: |
-          cosign sign --yes \
-            ${{ env.ECR_REGISTRY }}/dev/api@${{ steps.build.outputs.digest }}
-        env:
-          COSIGN_EXPERIMENTAL: "true"
-
+      # Only now, after the image has passed every gate, is it published. The
+      # digest recorded here is the one that gets signed and attested.
       - name: Push to ECR
-        uses: docker/build-push-action@v5
-        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
+        id: push
+        if: inputs.push
+        uses: docker/build-push-action@v6
         with:
           context: src/app/
           push: true
@@ -120,20 +150,50 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          build-args: |
+            BUILD_DATE=${{ github.event.head_commit.timestamp }}
+            VCS_REF=${{ github.sha }}
+
+      - name: Install cosign
+        if: inputs.push
+        uses: sigstore/cosign-installer@v4
+
+      - name: Sign image
+        # Signing by digest is what makes the signature meaningful. The previous
+        # version signed the output of a push:false build, where the digest is
+        # empty, so this step could never have produced a valid signature.
+        if: inputs.push
+        env:
+          REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+          IMAGE_REPO: ${{ inputs.environment }}/api
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          cosign sign --yes "${REGISTRY}/${IMAGE_REPO}@${DIGEST}"
 
       - name: Generate SBOM
+        if: inputs.push
         uses: anchore/sbom-action@v0
         with:
-          image: ${{ env.ECR_REGISTRY }}/dev/api:${{ steps.meta.outputs.version }}
+          image: ${{ steps.ecr-login.outputs.registry }}/${{ inputs.environment }}/api@${{ steps.push.outputs.digest }}
           format: spdx-json
           output-file: sbom.spdx.json
-        if: github.ref == 'refs/heads/main'
 
-      - name: Attach SBOM to image
-        if: github.ref == 'refs/heads/main'
-        run: |
-          cosign attest --yes --predicate sbom.spdx.json \
-            --type spdxjson \
-            ${{ env.ECR_REGISTRY }}/dev/api@${{ steps.build.outputs.digest }}
+      - name: Attach SBOM attestation to image
+        if: inputs.push
         env:
-          COSIGN_EXPERIMENTAL: "true"
+          REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+          IMAGE_REPO: ${{ inputs.environment }}/api
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          cosign attest --yes \
+            --predicate sbom.spdx.json \
+            --type spdxjson \
+            "${REGISTRY}/${IMAGE_REPO}@${DIGEST}"
+
+      - name: Upload SBOM artifact
+        if: inputs.push
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ steps.meta.outputs.version }}
+          path: sbom.spdx.json
+          retention-days: 90

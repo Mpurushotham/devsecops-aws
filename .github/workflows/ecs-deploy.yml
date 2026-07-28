@@ -26,6 +26,10 @@ permissions:
 env:
   AWS_REGION: us-east-1
 
+concurrency:
+  group: ecs-deploy-${{ inputs.environment }}
+  cancel-in-progress: false
+
 jobs:
   deploy-ecs:
     name: Deploy to ECS (${{ inputs.environment }})
@@ -33,19 +37,32 @@ jobs:
     environment: ${{ inputs.environment }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ inputs.environment }}-cicd-deploy-role
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: ECSDeploy
 
+      - name: Record current task definition for rollback
+        id: current
+        run: |
+          # Captured before the deploy so a failure can roll back to a known
+          # good revision rather than force-redeploying the broken one.
+          arn="$(aws ecs describe-services \
+            --cluster "${{ inputs.environment }}-cluster" \
+            --services "${{ inputs.environment }}-app-service" \
+            --query 'services[0].taskDefinition' \
+            --output text)"
+          echo "task-definition=${arn}" >> "$GITHUB_OUTPUT"
+          echo "Current task definition: ${arn}"
+
       - name: Download task definition
         run: |
           aws ecs describe-task-definition \
-            --task-definition ${{ inputs.environment }}-app \
+            --task-definition "${{ inputs.environment }}-app" \
             --query taskDefinition \
             > task-def.json
 
@@ -58,7 +75,7 @@ jobs:
           image: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ inputs.environment }}/api:${{ inputs.image-tag }}
 
       - name: Deploy to ECS
-        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
         with:
           task-definition: ${{ steps.task-def.outputs.task-definition }}
           service: ${{ inputs.environment }}-app-service
@@ -66,19 +83,30 @@ jobs:
           wait-for-service-stability: true
           wait-for-minutes: 10
 
-      - name: Run health check
+      - name: Verify running count
         run: |
-          aws ecs describe-services \
-            --cluster ${{ inputs.environment }}-cluster \
-            --services ${{ inputs.environment }}-app-service \
-            --query 'services[0].runningCount' \
-            --output text
+          read -r running desired <<< "$(aws ecs describe-services \
+            --cluster "${{ inputs.environment }}-cluster" \
+            --services "${{ inputs.environment }}-app-service" \
+            --query 'services[0].[runningCount,desiredCount]' \
+            --output text)"
+          echo "running=${running} desired=${desired}"
+          # Previously this step only printed the count, so a service running
+          # zero tasks still reported success.
+          if [ "${running}" -lt "${desired}" ]; then
+            echo "::error::Only ${running} of ${desired} tasks are running"
+            exit 1
+          fi
 
-      - name: Rollback on failure
-        if: failure()
+      - name: Roll back on failure
+        if: failure() && steps.current.outputs.task-definition != ''
         run: |
-          echo "Deployment failed, triggering rollback..."
+          echo "Rolling back to ${{ steps.current.outputs.task-definition }}"
           aws ecs update-service \
-            --cluster ${{ inputs.environment }}-cluster \
-            --service ${{ inputs.environment }}-app-service \
+            --cluster "${{ inputs.environment }}-cluster" \
+            --service "${{ inputs.environment }}-app-service" \
+            --task-definition "${{ steps.current.outputs.task-definition }}" \
             --force-new-deployment
+          aws ecs wait services-stable \
+            --cluster "${{ inputs.environment }}-cluster" \
+            --services "${{ inputs.environment }}-app-service"
