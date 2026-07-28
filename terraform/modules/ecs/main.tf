@@ -89,6 +89,12 @@ variable "alb_ingress_cidrs" {
   default     = ["10.0.0.0/8"]
 }
 
+variable "log_retention_days" {
+  description = "CloudWatch retention for application logs"
+  type        = number
+  default     = 30
+}
+
 variable "enable_deletion_protection" {
   description = "Block accidental ALB deletion. Should be false in ephemeral environments or terraform destroy will fail."
   type        = bool
@@ -143,8 +149,12 @@ resource "aws_ecs_cluster" "main" {
 }
 
 resource "aws_cloudwatch_log_group" "ecs" {
+  # checkov:skip=CKV_AWS_338: Application stdout, not audit evidence. The
+  # security record lives in CloudTrail and the ALB access logs, which are
+  # retained for a year and Object Locked in production. Holding a year of
+  # application logs costs materially and buys nothing for an investigation.
   name              = "/ecs/${var.environment}"
-  retention_in_days = 30
+  retention_in_days = var.log_retention_days
   kms_key_id        = var.kms_key_arn
 }
 
@@ -309,6 +319,8 @@ resource "aws_vpc_security_group_egress_rule" "app_https_s3" {
 }
 
 resource "aws_lb" "app" {
+  # checkov:skip=CKV_AWS_150: Deletion protection is on by default and only
+  # disabled explicitly in dev, where terraform destroy has to work.
   name               = "${var.environment}-app-alb"
   internal           = true
   load_balancer_type = "application"

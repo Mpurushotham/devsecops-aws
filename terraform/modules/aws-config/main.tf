@@ -251,21 +251,75 @@ resource "aws_config_remediation_configuration" "s3_public_read" {
   }
 }
 
+data "aws_caller_identity" "current" {}
+
 resource "aws_iam_role" "config_remediation" {
   name = "${var.environment}-config-remediation-role"
+
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
       Action    = "sts:AssumeRole"
       Effect    = "Allow"
       Principal = { Service = "ssm.amazonaws.com" }
+      # Confused-deputy guard: without these, any SSM automation in any account
+      # that can reach this role could assume it.
+      Condition = {
+        StringEquals = { "aws:SourceAccount" = data.aws_caller_identity.current.account_id }
+      }
     }]
   })
 }
 
-resource "aws_iam_role_policy_attachment" "config_remediation" {
-  role       = aws_iam_role.config_remediation.name
-  policy_arn = "arn:aws:iam::aws:policy/AdministratorAccess"
+# This role previously carried AdministratorAccess. It is assumable by the SSM
+# service to run one automation document, so full admin made the remediation
+# path a privilege escalation route: anything able to invoke SSM automation
+# inherited unrestricted access to the account.
+#
+# Scoped to exactly what AWS-DisableS3BucketPublicReadWrite calls.
+resource "aws_iam_role_policy" "config_remediation" {
+  # checkov:skip=CKV_AWS_355: the remediation acts on whichever bucket the
+  # Config finding names, which is not knowable when the policy is written.
+  # checkov:skip=CKV_AWS_289: the permissive-sounding actions here are the
+  # minimum AWS-DisableS3BucketPublicReadWrite needs to restore a public access
+  # block. This replaced an AdministratorAccess attachment, so the wildcard
+  # resource on seven scoped S3 actions is a large reduction, not an expansion.
+  name = "${var.environment}-config-remediation-policy"
+  role = aws_iam_role.config_remediation.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "RestoreS3PublicAccessBlock"
+        Effect = "Allow"
+        Action = [
+          "s3:GetBucketPublicAccessBlock",
+          "s3:PutBucketPublicAccessBlock",
+          "s3:GetBucketAcl",
+          "s3:PutBucketAcl",
+          "s3:GetBucketPolicyStatus",
+          "s3:GetBucketLocation",
+          "s3:ListAllMyBuckets",
+        ]
+        Resource = "*"
+      },
+      {
+        Sid      = "ReportRemediationOutcome"
+        Effect   = "Allow"
+        Action   = ["config:PutEvaluations", "ssm:GetAutomationExecution"]
+        Resource = "*"
+      }
+    ]
+  })
 }
 
-output "recorder_name" { value = aws_config_configuration_recorder.main.name }
+output "recorder_name" {
+  description = "Name of the Config configuration recorder"
+  value       = aws_config_configuration_recorder.main.name
+}
+
+output "remediation_role_arn" {
+  description = "Role SSM assumes to remediate findings"
+  value       = aws_iam_role.config_remediation.arn
+}

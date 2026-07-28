@@ -69,6 +69,10 @@ variable "object_lock_retention_days" {
 }
 
 resource "aws_s3_bucket" "main" {
+  # checkov:skip=CKV2_AWS_62: event notifications are not configured. These are
+  # log archive buckets written by AWS services; object-level reaction is
+  # handled by Config rules and GuardDuty S3 protection, not by a notification
+  # fan-out that nothing currently consumes.
   bucket              = var.bucket_name
   force_destroy       = false
   object_lock_enabled = var.object_lock_enabled

@@ -117,6 +117,13 @@ resource "aws_iam_role" "cicd_deploy" {
 }
 
 resource "aws_iam_role_policy" "cicd_deploy" {
+  # checkov:skip=CKV_AWS_355: ecr:GetAuthorizationToken and the ecs/eks
+  # Describe and List calls are account-level operations that do not accept a
+  # resource ARN; IAM rejects the policy if one is supplied. The genuinely
+  # resource-scoped statements below (state bucket, lock table) are scoped.
+  # checkov:skip=CKV_AWS_290: same. Write access is limited to ECR pushes and
+  # ECS service updates, and the role carries the permission boundary above,
+  # which denies IAM mutation and audit-log tampering outright.
   name = "${var.environment}-cicd-deploy-policy"
   role = aws_iam_role.cicd_deploy.id
 
@@ -228,6 +235,10 @@ resource "aws_iam_role_policy_attachment" "lambda_basic" {
 }
 
 resource "aws_iam_role_policy" "lambda_security" {
+  # checkov:skip=CKV_AWS_355: the remediation handlers act on whichever
+  # resource a finding names, which is not knowable when the policy is written.
+  # checkov:skip=CKV_AWS_290: constrained instead by the permission boundary,
+  # which denies deleting buckets, stopping trails and disabling detectors.
   name = "${var.environment}-lambda-security-policy"
   role = aws_iam_role.lambda_execution.id
 

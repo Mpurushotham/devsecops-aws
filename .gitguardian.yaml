@@ -1,0 +1,26 @@
+version: 2
+
+secret:
+  ignored-paths:
+    # Vendored upstream sample (app/VENDOR.md). The findings here are the
+    # placeholder AWS credentials in src/cart:
+    #
+    #   AWS_ACCESS_KEY_ID=key
+    #   AWS_SECRET_ACCESS_KEY=dummy
+    #
+    # DynamoDB Local ignores credential values but refuses to start without
+    # them being set, so the sample supplies literal placeholders. They grant
+    # access to nothing, and the file is not ours to edit: patching a vendored
+    # tree in place means the change is silently lost on the next refresh.
+    #
+    # GitLeaks, which gates this repository's own CI, already classifies these
+    # as placeholders and reports no leaks across the full history.
+    - 'app/**'
+
+    # Terraform provider lock files contain package hashes, which pattern
+    # matchers occasionally read as high-entropy secrets.
+    - '**/.terraform.lock.hcl'
+
+  # Nothing outside the vendored tree is exempt. A secret committed to
+  # first-party code should fail the check and be rotated, not ignored.
+  ignored-matches: []

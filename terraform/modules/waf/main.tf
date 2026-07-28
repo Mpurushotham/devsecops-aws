@@ -15,9 +15,9 @@ variable "kms_key_arn" {
 }
 
 variable "log_retention_days" {
-  description = "CloudWatch retention for WAF logs"
+  description = "CloudWatch retention for WAF logs. One year minimum: these record what was blocked and why."
   type        = number
-  default     = 90
+  default     = 365
 }
 
 resource "aws_wafv2_web_acl" "main" {

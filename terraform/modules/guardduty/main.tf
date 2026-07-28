@@ -15,6 +15,9 @@ variable "finding_publishing_frequency" {
 }
 
 resource "aws_guardduty_detector" "main" {
+  # checkov:skip=CKV2_AWS_3: the graph check looks for the detector and a
+  # Config recorder in one module. They are deliberately separate modules here;
+  # both are instantiated by every environment.
   enable                       = true
   finding_publishing_frequency = var.finding_publishing_frequency
 

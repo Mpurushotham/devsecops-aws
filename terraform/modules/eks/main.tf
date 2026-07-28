@@ -74,9 +74,9 @@ variable "node_max_size" {
 }
 
 variable "log_retention_days" {
-  description = "CloudWatch retention for control plane logs"
+  description = "CloudWatch retention for control plane logs. One year minimum: the audit log is the record of who did what in the cluster."
   type        = number
-  default     = 90
+  default     = 365
 }
 
 data "aws_partition" "current" {}
@@ -261,6 +261,9 @@ resource "aws_vpc_security_group_egress_rule" "node_https_internet" {
 }
 
 resource "aws_vpc_security_group_ingress_rule" "node_from_cluster" {
+  # checkov:skip=CKV_AWS_25: The range spans 1025-65535 because kubelet and
+  # extension API servers bind ephemeral ports, which EKS requires. It is
+  # reachable only from the control plane security group, not from any CIDR.
   security_group_id            = aws_security_group.node.id
   description                  = "Kubelet and extension API traffic from the control plane"
   referenced_security_group_id = aws_security_group.cluster.id

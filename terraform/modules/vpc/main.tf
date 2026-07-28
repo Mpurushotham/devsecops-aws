@@ -40,9 +40,9 @@ variable "kms_key_arn" {
 }
 
 variable "flow_log_retention_days" {
-  description = "CloudWatch retention for VPC flow logs"
+  description = "CloudWatch retention for VPC flow logs. One year minimum: flow logs are the primary evidence for reconstructing lateral movement."
   type        = number
-  default     = 90
+  default     = 365
 }
 
 variable "eks_cluster_name" {

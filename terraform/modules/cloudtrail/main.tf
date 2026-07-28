@@ -20,6 +20,10 @@ variable "log_retention_days" {
 }
 
 resource "aws_cloudtrail" "main" {
+  # checkov:skip=CKV_AWS_252: SNS notification on log file delivery is not used.
+  # Alerting runs off the CloudWatch metric filters in modules/monitoring and
+  # the Security Hub EventBridge rule, both of which carry the finding itself
+  # rather than only announcing that a log file landed.
   name                          = "${var.environment}-cloudtrail"
   s3_bucket_name                = var.s3_bucket_id
   kms_key_id                    = var.kms_key_arn
