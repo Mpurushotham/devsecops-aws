@@ -4,8 +4,8 @@ variable "aws_region" {
   default     = "us-east-1"
 }
 
-variable "environment" {
-  description = "Deployment environment"
+variable "eks_cluster_version" {
+  description = "Kubernetes control plane version for the EKS cluster"
   type        = string
-  default     = "dev"
+  default     = "1.31"
 }

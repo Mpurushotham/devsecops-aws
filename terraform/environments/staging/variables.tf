@@ -1,3 +1,21 @@
 variable "aws_region" {
-  default = "us-east-1"
+  description = "AWS region to deploy resources"
+  type        = string
+  default     = "us-east-1"
+}
+
+variable "eks_cluster_version" {
+  description = "Kubernetes control plane version for the EKS cluster"
+  type        = string
+  default     = "1.31"
+}
+
+variable "certificate_arn" {
+  description = <<-EOT
+    ACM certificate for the ALB HTTPS listener. Empty falls back to a plaintext
+    HTTP listener on the internal ALB, which is acceptable only until a domain
+    is issued for this environment.
+  EOT
+  type        = string
+  default     = ""
 }

@@ -1,5 +1,5 @@
 variable "root_email_prefix" { default = "aws" }
-variable "org_domain"        {}
+variable "org_domain" {}
 
 resource "aws_organizations_organization" "main" {
   aws_service_access_principals = [
@@ -152,15 +152,15 @@ resource "aws_organizations_policy" "deny_disable_security" {
         Resource = "*"
       },
       {
-        Sid    = "DenyDisableCloudTrail"
-        Effect = "Deny"
-        Action = ["cloudtrail:StopLogging", "cloudtrail:DeleteTrail", "cloudtrail:UpdateTrail"]
+        Sid      = "DenyDisableCloudTrail"
+        Effect   = "Deny"
+        Action   = ["cloudtrail:StopLogging", "cloudtrail:DeleteTrail", "cloudtrail:UpdateTrail"]
         Resource = "*"
       },
       {
-        Sid    = "DenyDisableConfig"
-        Effect = "Deny"
-        Action = ["config:DeleteConfigurationRecorder", "config:StopConfigurationRecorder", "config:DeleteDeliveryChannel"]
+        Sid      = "DenyDisableConfig"
+        Effect   = "Deny"
+        Action   = ["config:DeleteConfigurationRecorder", "config:StopConfigurationRecorder", "config:DeleteDeliveryChannel"]
         Resource = "*"
       }
     ]
@@ -182,9 +182,9 @@ resource "aws_organizations_policy" "require_encryption" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid    = "DenyUnencryptedS3"
-        Effect = "Deny"
-        Action = "s3:PutObject"
+        Sid      = "DenyUnencryptedS3"
+        Effect   = "Deny"
+        Action   = "s3:PutObject"
         Resource = "*"
         Condition = {
           StringNotEquals = { "s3:x-amz-server-side-encryption" = ["aws:kms", "AES256"] }
@@ -192,18 +192,18 @@ resource "aws_organizations_policy" "require_encryption" {
         }
       },
       {
-        Sid    = "DenyUnencryptedEBS"
-        Effect = "Deny"
-        Action = "ec2:RunInstances"
+        Sid      = "DenyUnencryptedEBS"
+        Effect   = "Deny"
+        Action   = "ec2:RunInstances"
         Resource = "arn:aws:ec2:*:*:volume/*"
         Condition = {
           Bool = { "ec2:Encrypted" = "false" }
         }
       },
       {
-        Sid    = "DenyUnencryptedRDS"
-        Effect = "Deny"
-        Action = "rds:CreateDBInstance"
+        Sid      = "DenyUnencryptedRDS"
+        Effect   = "Deny"
+        Action   = "rds:CreateDBInstance"
         Resource = "*"
         Condition = {
           Bool = { "rds:StorageEncrypted" = "false" }
@@ -218,6 +218,6 @@ resource "aws_organizations_policy_attachment" "require_encryption_prod" {
   target_id = aws_organizations_organizational_unit.prod.id
 }
 
-output "org_id"      { value = aws_organizations_organization.main.id }
-output "root_id"     { value = aws_organizations_organization.main.roots[0].id }
-output "prod_ou_id"  { value = aws_organizations_organizational_unit.prod.id }
+output "org_id" { value = aws_organizations_organization.main.id }
+output "root_id" { value = aws_organizations_organization.main.roots[0].id }
+output "prod_ou_id" { value = aws_organizations_organizational_unit.prod.id }

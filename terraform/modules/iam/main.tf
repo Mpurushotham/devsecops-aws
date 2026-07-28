@@ -31,9 +31,9 @@ resource "aws_iam_policy" "permission_boundary" {
         Resource = "*"
       },
       {
-        Sid    = "DenyRootActions"
-        Effect = "Deny"
-        Action = "*"
+        Sid      = "DenyRootActions"
+        Effect   = "Deny"
+        Action   = "*"
         Resource = "*"
         Condition = {
           StringEquals = { "aws:PrincipalType" = "Root" }
@@ -74,33 +74,33 @@ resource "aws_iam_role_policy" "cicd_deploy" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid    = "ECRAccess"
-        Effect = "Allow"
-        Action = ["ecr:GetAuthorizationToken", "ecr:BatchCheckLayerAvailability", "ecr:GetDownloadUrlForLayer", "ecr:BatchGetImage", "ecr:PutImage", "ecr:InitiateLayerUpload", "ecr:UploadLayerPart", "ecr:CompleteLayerUpload"]
+        Sid      = "ECRAccess"
+        Effect   = "Allow"
+        Action   = ["ecr:GetAuthorizationToken", "ecr:BatchCheckLayerAvailability", "ecr:GetDownloadUrlForLayer", "ecr:BatchGetImage", "ecr:PutImage", "ecr:InitiateLayerUpload", "ecr:UploadLayerPart", "ecr:CompleteLayerUpload"]
         Resource = "*"
       },
       {
-        Sid    = "ECSAccess"
-        Effect = "Allow"
-        Action = ["ecs:UpdateService", "ecs:DescribeServices", "ecs:RegisterTaskDefinition", "ecs:DescribeTaskDefinition"]
+        Sid      = "ECSAccess"
+        Effect   = "Allow"
+        Action   = ["ecs:UpdateService", "ecs:DescribeServices", "ecs:RegisterTaskDefinition", "ecs:DescribeTaskDefinition"]
         Resource = "*"
       },
       {
-        Sid    = "EKSAccess"
-        Effect = "Allow"
-        Action = ["eks:DescribeCluster", "eks:ListClusters"]
+        Sid      = "EKSAccess"
+        Effect   = "Allow"
+        Action   = ["eks:DescribeCluster", "eks:ListClusters"]
         Resource = "*"
       },
       {
-        Sid    = "S3TerraformState"
-        Effect = "Allow"
-        Action = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:ListBucket"]
+        Sid      = "S3TerraformState"
+        Effect   = "Allow"
+        Action   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:ListBucket"]
         Resource = ["arn:aws:s3:::devsecops-aws-tfstate-${var.environment}", "arn:aws:s3:::devsecops-aws-tfstate-${var.environment}/*"]
       },
       {
-        Sid    = "DynamoDBLock"
-        Effect = "Allow"
-        Action = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem"]
+        Sid      = "DynamoDBLock"
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem"]
         Resource = "arn:aws:dynamodb:*:*:table/terraform-state-lock"
       }
     ]
@@ -208,6 +208,6 @@ resource "aws_iam_role_policy" "lambda_security" {
   })
 }
 
-output "cicd_deploy_role_arn"      { value = aws_iam_role.cicd_deploy.arn }
+output "cicd_deploy_role_arn" { value = aws_iam_role.cicd_deploy.arn }
 output "lambda_execution_role_arn" { value = aws_iam_role.lambda_execution.arn }
-output "permission_boundary_arn"   { value = aws_iam_policy.permission_boundary.arn }
+output "permission_boundary_arn" { value = aws_iam_policy.permission_boundary.arn }

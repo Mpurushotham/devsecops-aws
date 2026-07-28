@@ -1,9 +1,28 @@
-variable "environment" {}
-variable "kms_key_arn" {}
-variable "s3_bucket_arn" {}
-variable "s3_bucket_id" {}
+variable "environment" {
+  description = "Deployment environment name, used as a prefix for all resources"
+  type        = string
+}
 
-data "aws_caller_identity" "current" {}
+variable "kms_key_arn" {
+  description = "KMS key ARN used to encrypt the trail and its log group"
+  type        = string
+}
+
+variable "s3_bucket_arn" {
+  description = "ARN of the bucket receiving CloudTrail log files"
+  type        = string
+}
+
+variable "s3_bucket_id" {
+  description = "Name of the bucket receiving CloudTrail log files"
+  type        = string
+}
+
+variable "log_retention_days" {
+  description = "CloudWatch retention for the CloudTrail log group"
+  type        = number
+  default     = 365
+}
 
 resource "aws_cloudtrail" "main" {
   name                          = "${var.environment}-cloudtrail"
@@ -14,13 +33,18 @@ resource "aws_cloudtrail" "main" {
   enable_log_file_validation    = true
   enable_logging                = true
 
+  # Without these two the log group below receives nothing, and every CIS metric
+  # filter and alarm built on it silently never fires.
+  cloud_watch_logs_group_arn = "${aws_cloudwatch_log_group.cloudtrail.arn}:*"
+  cloud_watch_logs_role_arn  = aws_iam_role.cloudtrail_cw.arn
+
   event_selector {
     read_write_type           = "All"
     include_management_events = true
 
     data_resource {
       type   = "AWS::S3::Object"
-      values = ["arn:aws:s3:::"]
+      values = ["arn:aws:s3:::*/*"]
     }
 
     data_resource {
@@ -42,7 +66,7 @@ resource "aws_cloudtrail" "main" {
 
 resource "aws_cloudwatch_log_group" "cloudtrail" {
   name              = "/aws/cloudtrail/${var.environment}"
-  retention_in_days = 365
+  retention_in_days = var.log_retention_days
   kms_key_id        = var.kms_key_arn
 }
 
@@ -65,12 +89,12 @@ resource "aws_iam_role_policy" "cloudtrail_cw" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Effect = "Allow"
-      Action = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents", "logs:DescribeLogGroups", "logs:DescribeLogStreams"]
+      Effect   = "Allow"
+      Action   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents", "logs:DescribeLogGroups", "logs:DescribeLogStreams"]
       Resource = "${aws_cloudwatch_log_group.cloudtrail.arn}:*"
     }]
   })
 }
 
-output "trail_arn"      { value = aws_cloudtrail.main.arn }
+output "trail_arn" { value = aws_cloudtrail.main.arn }
 output "log_group_name" { value = aws_cloudwatch_log_group.cloudtrail.name }

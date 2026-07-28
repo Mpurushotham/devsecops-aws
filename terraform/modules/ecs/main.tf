@@ -1,13 +1,108 @@
-variable "environment" {}
-variable "vpc_id" {}
-variable "private_subnet_ids" { type = list(string) }
-variable "kms_key_arn" {}
-variable "app_image" {}
-variable "app_port"  { default = 8080 }
-variable "cpu"       { default = 512 }
-variable "memory"    { default = 1024 }
-variable "min_capacity" { default = 2 }
-variable "max_capacity" { default = 10 }
+variable "environment" {
+  description = "Deployment environment name, used as a prefix for all resources"
+  type        = string
+}
+
+variable "vpc_id" {
+  description = "VPC hosting the cluster and load balancer"
+  type        = string
+}
+
+variable "private_subnet_ids" {
+  description = "Private subnets for tasks and the internal ALB"
+  type        = list(string)
+}
+
+variable "kms_key_arn" {
+  description = "KMS key ARN for log encryption and secret decryption"
+  type        = string
+}
+
+variable "app_image" {
+  description = "Fully qualified container image for the app task"
+  type        = string
+}
+
+variable "app_port" {
+  description = "Port the container listens on"
+  type        = number
+  default     = 8080
+}
+
+variable "cpu" {
+  description = "Fargate task CPU units"
+  type        = number
+  default     = 512
+}
+
+variable "memory" {
+  description = "Fargate task memory in MiB"
+  type        = number
+  default     = 1024
+}
+
+variable "min_capacity" {
+  description = "Minimum task count"
+  type        = number
+  default     = 2
+}
+
+variable "max_capacity" {
+  description = "Maximum task count"
+  type        = number
+  default     = 10
+}
+
+variable "certificate_arn" {
+  description = <<-EOT
+    ACM certificate for the ALB HTTPS listener. When empty the module falls back
+    to a plaintext HTTP listener, which is only acceptable for an internal ALB in
+    a non-production environment that has no domain yet.
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "access_logs_bucket" {
+  description = "Bucket receiving ALB access logs"
+  type        = string
+}
+
+variable "alb_ingress_cidrs" {
+  description = "CIDRs allowed to reach the internal ALB"
+  type        = list(string)
+  default     = ["10.0.0.0/8"]
+}
+
+variable "enable_deletion_protection" {
+  description = "Block accidental ALB deletion. Should be false in ephemeral environments or terraform destroy will fail."
+  type        = bool
+  default     = true
+}
+
+variable "db_password_secret_arn" {
+  description = <<-EOT
+    Full ARN of the Secrets Manager secret holding the database password.
+    Leave empty to omit the secret from the task definition. A wildcard ARN is
+    not valid here: ECS resolves this at task start and rejects anything that is
+    not a concrete ARN.
+  EOT
+  type        = string
+  default     = ""
+}
+
+data "aws_caller_identity" "current" {}
+
+data "aws_region" "current" {}
+
+# The regional ELB service account that owns ALB access log delivery.
+data "aws_elb_service_account" "current" {}
+
+locals {
+  task_secrets = var.db_password_secret_arn == "" ? [] : [
+    { name = "DB_PASSWORD", valueFrom = var.db_password_secret_arn }
+  ]
+}
 
 resource "aws_ecs_cluster" "main" {
   name = "${var.environment}-cluster"
@@ -61,15 +156,13 @@ resource "aws_ecs_task_definition" "app" {
       { name = "ENVIRONMENT", value = var.environment }
     ]
 
-    secrets = [
-      { name = "DB_PASSWORD", valueFrom = "arn:aws:secretsmanager:us-east-1:*:secret:${var.environment}/db-password" }
-    ]
+    secrets = local.task_secrets
 
     logConfiguration = {
       logDriver = "awslogs"
       options = {
         "awslogs-group"         = aws_cloudwatch_log_group.ecs.name
-        "awslogs-region"        = "us-east-1"
+        "awslogs-region"        = data.aws_region.current.name
         "awslogs-stream-prefix" = "app"
       }
     }
@@ -95,14 +188,14 @@ resource "aws_ecs_task_definition" "app" {
 }
 
 resource "aws_ecs_service" "app" {
-  name                               = "${var.environment}-app-service"
-  cluster                            = aws_ecs_cluster.main.id
-  task_definition                    = aws_ecs_task_definition.app.arn
-  desired_count                      = var.min_capacity
-  launch_type                        = "FARGATE"
-  platform_version                   = "LATEST"
-  enable_execute_command             = false
-  health_check_grace_period_seconds  = 60
+  name                              = "${var.environment}-app-service"
+  cluster                           = aws_ecs_cluster.main.id
+  task_definition                   = aws_ecs_task_definition.app.arn
+  desired_count                     = var.min_capacity
+  launch_type                       = "FARGATE"
+  platform_version                  = "LATEST"
+  enable_execute_command            = false
+  health_check_grace_period_seconds = 60
 
   network_configuration {
     subnets          = var.private_subnet_ids
@@ -160,15 +253,31 @@ resource "aws_security_group" "app" {
   description = "ECS app task security group"
   vpc_id      = var.vpc_id
 
-  egress {
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-    description = "HTTPS outbound"
-  }
-
   tags = { Environment = var.environment }
+}
+
+# The ALB and task groups reference each other, so their rules live outside the
+# group definitions. Inline blocks would make the two groups mutually dependent
+# and Terraform would reject the graph as a cycle.
+
+# Without this rule the ALB has no path to the tasks, every health check fails,
+# and the service never reaches a steady state.
+resource "aws_vpc_security_group_ingress_rule" "app_from_alb" {
+  security_group_id            = aws_security_group.app.id
+  description                  = "App traffic and health checks from the ALB"
+  referenced_security_group_id = aws_security_group.alb.id
+  from_port                    = var.app_port
+  to_port                      = var.app_port
+  ip_protocol                  = "tcp"
+}
+
+resource "aws_vpc_security_group_egress_rule" "app_https" {
+  security_group_id = aws_security_group.app.id
+  description       = "HTTPS outbound for ECR pulls, Secrets Manager and CloudWatch"
+  cidr_ipv4         = "0.0.0.0/0"
+  from_port         = 443
+  to_port           = 443
+  ip_protocol       = "tcp"
 }
 
 resource "aws_lb" "app" {
@@ -178,11 +287,11 @@ resource "aws_lb" "app" {
   security_groups    = [aws_security_group.alb.id]
   subnets            = var.private_subnet_ids
 
-  enable_deletion_protection = true
+  enable_deletion_protection = var.enable_deletion_protection
   drop_invalid_header_fields = true
 
   access_logs {
-    bucket  = "devsecops-aws-logs-${var.environment}"
+    bucket  = var.access_logs_bucket
     prefix  = "alb"
     enabled = true
   }
@@ -207,11 +316,27 @@ resource "aws_lb_target_group" "app" {
   }
 }
 
+# An HTTPS listener without certificate_arn is rejected by the API, so the
+# listener type follows whether a certificate was supplied.
 resource "aws_lb_listener" "https" {
+  count             = var.certificate_arn == "" ? 0 : 1
   load_balancer_arn = aws_lb.app.arn
   port              = 443
   protocol          = "HTTPS"
   ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
+  certificate_arn   = var.certificate_arn
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.app.arn
+  }
+}
+
+resource "aws_lb_listener" "http" {
+  count             = var.certificate_arn == "" ? 1 : 0
+  load_balancer_arn = aws_lb.app.arn
+  port              = 80
+  protocol          = "HTTP"
 
   default_action {
     type             = "forward"
@@ -224,23 +349,27 @@ resource "aws_security_group" "alb" {
   description = "ALB security group"
   vpc_id      = var.vpc_id
 
-  ingress {
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = ["10.0.0.0/8"]
-    description = "Internal HTTPS"
-  }
-
-  egress {
-    from_port       = var.app_port
-    to_port         = var.app_port
-    protocol        = "tcp"
-    security_groups = [aws_security_group.app.id]
-    description     = "To ECS tasks"
-  }
-
   tags = { Environment = var.environment }
+}
+
+resource "aws_vpc_security_group_ingress_rule" "alb_client" {
+  for_each = toset(var.alb_ingress_cidrs)
+
+  security_group_id = aws_security_group.alb.id
+  description       = "Internal client traffic"
+  cidr_ipv4         = each.value
+  from_port         = var.certificate_arn == "" ? 80 : 443
+  to_port           = var.certificate_arn == "" ? 80 : 443
+  ip_protocol       = "tcp"
+}
+
+resource "aws_vpc_security_group_egress_rule" "alb_to_tasks" {
+  security_group_id            = aws_security_group.alb.id
+  description                  = "To ECS tasks"
+  referenced_security_group_id = aws_security_group.app.id
+  from_port                    = var.app_port
+  to_port                      = var.app_port
+  ip_protocol                  = "tcp"
 }
 
 resource "aws_iam_role" "task" {
@@ -282,7 +411,7 @@ resource "aws_iam_role_policy" "execution_secrets" {
       {
         Effect   = "Allow"
         Action   = ["secretsmanager:GetSecretValue"]
-        Resource = "arn:aws:secretsmanager:*:*:secret:${var.environment}/*"
+        Resource = "arn:aws:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:${var.environment}/*"
       },
       {
         Effect   = "Allow"
@@ -293,7 +422,42 @@ resource "aws_iam_role_policy" "execution_secrets" {
   })
 }
 
-output "cluster_arn"     { value = aws_ecs_cluster.main.arn }
-output "cluster_name"    { value = aws_ecs_cluster.main.name }
-output "service_name"    { value = aws_ecs_service.app.name }
-output "alb_dns_name"    { value = aws_lb.app.dns_name }
+output "cluster_arn" {
+  description = "ARN of the ECS cluster"
+  value       = aws_ecs_cluster.main.arn
+}
+
+output "cluster_name" {
+  description = "Name of the ECS cluster"
+  value       = aws_ecs_cluster.main.name
+}
+
+output "service_name" {
+  description = "Name of the ECS service"
+  value       = aws_ecs_service.app.name
+}
+
+output "task_definition_family" {
+  description = "Task definition family, used by the deploy workflow"
+  value       = aws_ecs_task_definition.app.family
+}
+
+output "alb_dns_name" {
+  description = "DNS name of the internal ALB"
+  value       = aws_lb.app.dns_name
+}
+
+output "alb_arn" {
+  description = "ARN of the ALB, for associating a WAF web ACL"
+  value       = aws_lb.app.arn
+}
+
+output "target_group_arn" {
+  description = "ARN of the app target group"
+  value       = aws_lb_target_group.app.arn
+}
+
+output "elb_service_account_arn" {
+  description = "ELB service account principal that must be allowed to write ALB access logs"
+  value       = data.aws_elb_service_account.current.arn
+}

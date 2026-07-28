@@ -1,6 +1,6 @@
 variable "environment" {}
 variable "s3_bucket_id" {}
-variable "kms_key_arn"  {}
+variable "kms_key_arn" {}
 
 data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}

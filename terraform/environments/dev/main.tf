@@ -1,8 +1,20 @@
 terraform {
   required_version = ">= 1.5"
+
   required_providers {
-    aws = { source = "hashicorp/aws", version = "~> 5.0" }
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+    tls = {
+      source  = "hashicorp/tls"
+      version = "~> 4.0"
+    }
   }
+
+  # The state bucket and lock table are created out of band by
+  # scripts/bootstrap.sh. Terraform cannot create the bucket that holds its own
+  # state, so this configuration deliberately does not manage them.
   backend "s3" {
     bucket         = "devsecops-aws-tfstate-dev"
     key            = "dev/terraform.tfstate"
@@ -14,43 +26,60 @@ terraform {
 
 provider "aws" {
   region = var.aws_region
+
   default_tags {
     tags = {
-      Environment = "dev"
+      Environment = local.environment
       Project     = "devsecops-aws"
       ManagedBy   = "terraform"
     }
   }
 }
 
+locals {
+  environment = "dev"
+}
+
 module "kms" {
   source      = "../../modules/kms"
-  environment = "dev"
+  environment = local.environment
+}
+
+# Receives S3 server access logs from every other bucket. It cannot log to
+# itself without creating a feedback loop, so it is the one bucket with no
+# access_log_bucket_id.
+module "s3_access_logs" {
+  source               = "../../modules/s3"
+  environment          = local.environment
+  bucket_name          = "devsecops-aws-s3-access-logs-${local.environment}"
+  kms_key_arn          = module.kms.key_arn
+  is_access_log_bucket = true
 }
 
 module "s3_logs" {
-  source      = "../../modules/s3"
-  environment = "dev"
-  bucket_name = "devsecops-aws-logs-dev"
-  kms_key_arn = module.kms.key_arn
-}
-
-module "s3_tfstate" {
-  source      = "../../modules/s3"
-  environment = "dev"
-  bucket_name = "devsecops-aws-tfstate-dev"
-  kms_key_arn = module.kms.key_arn
+  source                = "../../modules/s3"
+  environment           = local.environment
+  bucket_name           = "devsecops-aws-logs-${local.environment}"
+  kms_key_arn           = module.kms.key_arn
+  access_log_bucket_id  = module.s3_access_logs.bucket_id
+  log_delivery_services = ["cloudtrail", "config", "alb"]
 }
 
 module "vpc" {
   source      = "../../modules/vpc"
-  environment = "dev"
+  environment = local.environment
   cidr_block  = "10.0.0.0/16"
+  kms_key_arn = module.kms.key_arn
+
+  # Dev tolerates the single point of failure in exchange for one NAT gateway
+  # instead of two.
+  single_nat_gateway = true
+  eks_cluster_name   = "${local.environment}-cluster"
 }
 
 module "cloudtrail" {
   source        = "../../modules/cloudtrail"
-  environment   = "dev"
+  environment   = local.environment
   kms_key_arn   = module.kms.key_arn
   s3_bucket_arn = module.s3_logs.bucket_arn
   s3_bucket_id  = module.s3_logs.bucket_id
@@ -58,50 +87,67 @@ module "cloudtrail" {
 
 module "aws_config" {
   source       = "../../modules/aws-config"
-  environment  = "dev"
+  environment  = local.environment
   s3_bucket_id = module.s3_logs.bucket_id
   kms_key_arn  = module.kms.key_arn
 }
 
 module "security_hub" {
   source      = "../../modules/security-hub"
-  environment = "dev"
+  environment = local.environment
+}
+
+module "guardduty" {
+  source      = "../../modules/guardduty"
+  environment = local.environment
 }
 
 module "iam" {
   source      = "../../modules/iam"
-  environment = "dev"
+  environment = local.environment
 }
 
 module "ecr" {
   source       = "../../modules/ecr"
-  environment  = "dev"
+  environment  = local.environment
   kms_key_arn  = module.kms.key_arn
-  repositories = ["api", "frontend", "worker"]
+  repositories = ["api", "frontend", "worker", "ui", "catalog", "cart", "checkout", "orders"]
 }
 
 module "eks" {
   source          = "../../modules/eks"
-  environment     = "dev"
-  cluster_version = "1.29"
+  environment     = local.environment
+  cluster_version = var.eks_cluster_version
   vpc_id          = module.vpc.vpc_id
   subnet_ids      = module.vpc.private_subnet_ids
+  kms_key_arn     = module.kms.key_arn
+
+  node_desired_size = 2
+  node_min_size     = 2
+  node_max_size     = 4
 }
 
 module "ecs" {
   source             = "../../modules/ecs"
-  environment        = "dev"
+  environment        = local.environment
   vpc_id             = module.vpc.vpc_id
   private_subnet_ids = module.vpc.private_subnet_ids
   kms_key_arn        = module.kms.key_arn
   app_image          = "${module.ecr.repository_urls["api"]}:latest"
+  access_logs_bucket = module.s3_logs.bucket_id
+  alb_ingress_cidrs  = [module.vpc.vpc_cidr_block]
+
+  # Dev is rebuilt often, and deletion protection makes terraform destroy fail.
+  enable_deletion_protection = false
 }
 
 module "monitoring" {
-  source           = "../../modules/monitoring"
-  environment      = "dev"
-  kms_key_arn      = module.kms.key_arn
-  sns_alarm_arn    = module.security_hub.sns_topic_arn
-  eks_cluster_name = module.eks.cluster_name
-  ecs_cluster_name = module.ecs.cluster_name
+  source                    = "../../modules/monitoring"
+  environment               = local.environment
+  aws_region                = var.aws_region
+  kms_key_arn               = module.kms.key_arn
+  sns_alarm_arn             = module.security_hub.sns_topic_arn
+  eks_cluster_name          = module.eks.cluster_name
+  ecs_cluster_name          = module.ecs.cluster_name
+  cloudtrail_log_group_name = module.cloudtrail.log_group_name
 }

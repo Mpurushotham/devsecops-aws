@@ -1,7 +1,7 @@
 variable "environment" {}
-variable "enable_cis"    { default = true }
-variable "enable_pci"    { default = false }
-variable "enable_nist"   { default = true }
+variable "enable_cis" { default = true }
+variable "enable_pci" { default = false }
+variable "enable_nist" { default = true }
 variable "enable_aws_foundational" { default = true }
 
 resource "aws_securityhub_account" "main" {}
@@ -51,8 +51,8 @@ resource "aws_cloudwatch_event_rule" "securityhub_findings" {
     detail-type = ["Security Hub Findings - Imported"]
     detail = {
       findings = {
-        Severity = { Label = ["CRITICAL", "HIGH"] }
-        Workflow  = { Status = ["NEW"] }
+        Severity    = { Label = ["CRITICAL", "HIGH"] }
+        Workflow    = { Status = ["NEW"] }
         RecordState = ["ACTIVE"]
       }
     }

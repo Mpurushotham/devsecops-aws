@@ -1,8 +1,46 @@
-variable "environment" {}
-variable "kms_key_arn" {}
-variable "sns_alarm_arn" { default = "" }
-variable "eks_cluster_name" { default = "" }
-variable "ecs_cluster_name" { default = "" }
+variable "environment" {
+  description = "Deployment environment name, used as a prefix for all resources"
+  type        = string
+}
+
+variable "kms_key_arn" {
+  description = "KMS key ARN used to encrypt log groups owned by this module"
+  type        = string
+}
+
+variable "sns_alarm_arn" {
+  description = "SNS topic ARN notified by the CIS alarms. Alarm actions are omitted when empty."
+  type        = string
+  default     = ""
+}
+
+variable "eks_cluster_name" {
+  description = "EKS cluster name surfaced on the dashboard"
+  type        = string
+  default     = ""
+}
+
+variable "ecs_cluster_name" {
+  description = "ECS cluster name surfaced on the dashboard"
+  type        = string
+  default     = ""
+}
+
+variable "aws_region" {
+  description = "Region used for dashboard widget queries"
+  type        = string
+}
+
+variable "cloudtrail_log_group_name" {
+  description = "CloudWatch log group receiving CloudTrail events, the source for the CIS metric filters"
+  type        = string
+}
+
+# Alarm actions must be an empty list rather than [""] when no topic is wired up,
+# otherwise CloudWatch rejects the malformed ARN.
+locals {
+  alarm_actions = var.sns_alarm_arn == "" ? [] : [var.sns_alarm_arn]
+}
 
 # --- CloudWatch Dashboard ---
 resource "aws_cloudwatch_dashboard" "main" {
@@ -12,13 +50,17 @@ resource "aws_cloudwatch_dashboard" "main" {
     widgets = [
       {
         type   = "metric"
-        x      = 0; y = 0; width = 12; height = 6
+        x      = 0
+        y      = 0
+        width  = 12
+        height = 6
         properties = {
-          title   = "ECS CPU/Memory Utilization"
+          title = "ECS CPU/Memory Utilization"
           metrics = [
             ["AWS/ECS", "CPUUtilization", "ClusterName", var.ecs_cluster_name],
             ["AWS/ECS", "MemoryUtilization", "ClusterName", var.ecs_cluster_name]
           ]
+          region = var.aws_region
           period = 300
           stat   = "Average"
           view   = "timeSeries"
@@ -26,24 +68,32 @@ resource "aws_cloudwatch_dashboard" "main" {
       },
       {
         type   = "metric"
-        x      = 12; y = 0; width = 12; height = 6
+        x      = 12
+        y      = 0
+        width  = 12
+        height = 6
         properties = {
-          title   = "Security Hub - Critical Findings"
+          title = "Security Hub - Critical Findings"
           metrics = [
             ["AWS/SecurityHub", "TotalFindings", { stat = "Sum" }]
           ]
+          region = var.aws_region
           period = 3600
           view   = "singleValue"
         }
       },
       {
         type   = "metric"
-        x      = 0; y = 6; width = 12; height = 6
+        x      = 0
+        y      = 6
+        width  = 12
+        height = 6
         properties = {
-          title   = "GuardDuty Findings"
+          title = "GuardDuty Findings"
           metrics = [
             ["AWS/GuardDuty", "FindingCount"]
           ]
+          region = var.aws_region
           period = 3600
           stat   = "Sum"
           view   = "timeSeries"
@@ -51,12 +101,15 @@ resource "aws_cloudwatch_dashboard" "main" {
       },
       {
         type   = "log"
-        x      = 12; y = 6; width = 12; height = 6
+        x      = 12
+        y      = 6
+        width  = 12
+        height = 6
         properties = {
-          title   = "CloudTrail - Root Logins"
-          query   = "SOURCE '/aws/cloudtrail/${var.environment}' | filter userIdentity.type='Root' | stats count(*) by eventName"
-          region  = "us-east-1"
-          view    = "table"
+          title  = "CloudTrail - Root Logins"
+          query  = "SOURCE '${var.cloudtrail_log_group_name}' | filter userIdentity.type='Root' | stats count(*) by eventName"
+          region = var.aws_region
+          view   = "table"
         }
       }
     ]
@@ -76,8 +129,8 @@ resource "aws_cloudwatch_metric_alarm" "root_login" {
   threshold           = 1
   comparison_operator = "GreaterThanOrEqualToThreshold"
   treat_missing_data  = "notBreaching"
-  alarm_actions       = [var.sns_alarm_arn]
-  ok_actions          = [var.sns_alarm_arn]
+  alarm_actions       = local.alarm_actions
+  ok_actions          = local.alarm_actions
 }
 
 resource "aws_cloudwatch_metric_alarm" "unauthorized_api" {
@@ -91,7 +144,7 @@ resource "aws_cloudwatch_metric_alarm" "unauthorized_api" {
   threshold           = 5
   comparison_operator = "GreaterThanOrEqualToThreshold"
   treat_missing_data  = "notBreaching"
-  alarm_actions       = [var.sns_alarm_arn]
+  alarm_actions       = local.alarm_actions
 }
 
 resource "aws_cloudwatch_metric_alarm" "console_without_mfa" {
@@ -105,7 +158,7 @@ resource "aws_cloudwatch_metric_alarm" "console_without_mfa" {
   threshold           = 1
   comparison_operator = "GreaterThanOrEqualToThreshold"
   treat_missing_data  = "notBreaching"
-  alarm_actions       = [var.sns_alarm_arn]
+  alarm_actions       = local.alarm_actions
 }
 
 resource "aws_cloudwatch_metric_alarm" "iam_policy_change" {
@@ -119,7 +172,7 @@ resource "aws_cloudwatch_metric_alarm" "iam_policy_change" {
   threshold           = 1
   comparison_operator = "GreaterThanOrEqualToThreshold"
   treat_missing_data  = "notBreaching"
-  alarm_actions       = [var.sns_alarm_arn]
+  alarm_actions       = local.alarm_actions
 }
 
 resource "aws_cloudwatch_metric_alarm" "sg_changes" {
@@ -133,14 +186,14 @@ resource "aws_cloudwatch_metric_alarm" "sg_changes" {
   threshold           = 1
   comparison_operator = "GreaterThanOrEqualToThreshold"
   treat_missing_data  = "notBreaching"
-  alarm_actions       = [var.sns_alarm_arn]
+  alarm_actions       = local.alarm_actions
 }
 
 # --- CloudWatch Log Metric Filters (required for alarms above) ---
 
 resource "aws_cloudwatch_log_metric_filter" "root_login" {
   name           = "${var.environment}-root-login-filter"
-  log_group_name = "/aws/cloudtrail/${var.environment}"
+  log_group_name = var.cloudtrail_log_group_name
   pattern        = "{ $.userIdentity.type = \"Root\" && $.userIdentity.invokedBy NOT EXISTS && $.eventType != \"AwsServiceEvent\" }"
 
   metric_transformation {
@@ -152,7 +205,7 @@ resource "aws_cloudwatch_log_metric_filter" "root_login" {
 
 resource "aws_cloudwatch_log_metric_filter" "unauthorized_api" {
   name           = "${var.environment}-unauthorized-api-filter"
-  log_group_name = "/aws/cloudtrail/${var.environment}"
+  log_group_name = var.cloudtrail_log_group_name
   pattern        = "{ ($.errorCode = \"*UnauthorizedAccess*\") || ($.errorCode = \"AccessDenied*\") }"
 
   metric_transformation {
@@ -164,7 +217,7 @@ resource "aws_cloudwatch_log_metric_filter" "unauthorized_api" {
 
 resource "aws_cloudwatch_log_metric_filter" "console_without_mfa" {
   name           = "${var.environment}-console-no-mfa-filter"
-  log_group_name = "/aws/cloudtrail/${var.environment}"
+  log_group_name = var.cloudtrail_log_group_name
   pattern        = "{ $.eventName = \"ConsoleLogin\" && $.additionalEventData.MFAUsed = \"No\" }"
 
   metric_transformation {
@@ -176,7 +229,7 @@ resource "aws_cloudwatch_log_metric_filter" "console_without_mfa" {
 
 resource "aws_cloudwatch_log_metric_filter" "iam_policy_change" {
   name           = "${var.environment}-iam-policy-change-filter"
-  log_group_name = "/aws/cloudtrail/${var.environment}"
+  log_group_name = var.cloudtrail_log_group_name
   pattern        = "{ ($.eventName = DeleteGroupPolicy) || ($.eventName = DeleteRolePolicy) || ($.eventName = DeleteUserPolicy) || ($.eventName = PutGroupPolicy) || ($.eventName = PutRolePolicy) || ($.eventName = PutUserPolicy) || ($.eventName = CreatePolicy) || ($.eventName = DeletePolicy) || ($.eventName = CreatePolicyVersion) || ($.eventName = DeletePolicyVersion) || ($.eventName = SetDefaultPolicyVersion) || ($.eventName = AttachRolePolicy) || ($.eventName = DetachRolePolicy) || ($.eventName = AttachUserPolicy) || ($.eventName = DetachUserPolicy) || ($.eventName = AttachGroupPolicy) || ($.eventName = DetachGroupPolicy) }"
 
   metric_transformation {
@@ -188,7 +241,7 @@ resource "aws_cloudwatch_log_metric_filter" "iam_policy_change" {
 
 resource "aws_cloudwatch_log_metric_filter" "sg_changes" {
   name           = "${var.environment}-sg-change-filter"
-  log_group_name = "/aws/cloudtrail/${var.environment}"
+  log_group_name = var.cloudtrail_log_group_name
   pattern        = "{ ($.eventName = AuthorizeSecurityGroupIngress) || ($.eventName = AuthorizeSecurityGroupEgress) || ($.eventName = RevokeSecurityGroupIngress) || ($.eventName = RevokeSecurityGroupEgress) || ($.eventName = CreateSecurityGroup) || ($.eventName = DeleteSecurityGroup) }"
 
   metric_transformation {
