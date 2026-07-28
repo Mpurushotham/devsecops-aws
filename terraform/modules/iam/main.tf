@@ -1,4 +1,7 @@
-variable "environment" {}
+variable "environment" {
+  description = "Deployment environment name, used as a prefix for all resources"
+  type        = string
+}
 
 data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}

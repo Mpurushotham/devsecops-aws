@@ -8,11 +8,6 @@ variable "kms_key_arn" {
   type        = string
 }
 
-variable "s3_bucket_arn" {
-  description = "ARN of the bucket receiving CloudTrail log files"
-  type        = string
-}
-
 variable "s3_bucket_id" {
   description = "Name of the bucket receiving CloudTrail log files"
   type        = string

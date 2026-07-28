@@ -79,9 +79,10 @@ jobs:
         with:
           tflint_version: latest
       - name: Run tflint
+        # --chdir keeps the vendored app/ tree out of scope; see .tflint.hcl.
         run: |
           tflint --init
-          tflint --recursive --format compact
+          tflint --chdir=terraform --recursive --format compact
 
   plan-dev:
     name: Plan Dev

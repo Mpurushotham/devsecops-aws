@@ -86,11 +86,10 @@ module "vpc" {
 }
 
 module "cloudtrail" {
-  source        = "../../modules/cloudtrail"
-  environment   = local.environment
-  kms_key_arn   = module.kms.key_arn
-  s3_bucket_arn = module.s3_logs.bucket_arn
-  s3_bucket_id  = module.s3_logs.bucket_id
+  source       = "../../modules/cloudtrail"
+  environment  = local.environment
+  kms_key_arn  = module.kms.key_arn
+  s3_bucket_id = module.s3_logs.bucket_id
 }
 
 module "aws_config" {
@@ -158,7 +157,6 @@ module "monitoring" {
   source                    = "../../modules/monitoring"
   environment               = local.environment
   aws_region                = var.aws_region
-  kms_key_arn               = module.kms.key_arn
   sns_alarm_arn             = module.security_hub.sns_topic_arn
   eks_cluster_name          = module.eks.cluster_name
   ecs_cluster_name          = module.ecs.cluster_name
@@ -196,7 +194,6 @@ provider "helm" {
 module "argocd" {
   source            = "../../modules/argocd"
   environment       = local.environment
-  cluster_name      = module.eks.cluster_name
   oidc_provider_arn = module.eks.oidc_provider_arn
   oidc_provider_url = module.eks.oidc_provider_url
   kms_key_arn       = module.kms.key_arn

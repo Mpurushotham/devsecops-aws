@@ -1,9 +1,17 @@
-variable "environment" {}
-variable "s3_bucket_id" {}
-variable "kms_key_arn" {}
+variable "environment" {
+  description = "Deployment environment name, used as a prefix for all resources"
+  type        = string
+}
 
-data "aws_caller_identity" "current" {}
-data "aws_region" "current" {}
+variable "s3_bucket_id" {
+  description = "Bucket receiving Config configuration snapshots and history"
+  type        = string
+}
+
+variable "kms_key_arn" {
+  description = "KMS key ARN used to encrypt Config deliveries to S3"
+  type        = string
+}
 
 resource "aws_iam_role" "config" {
   name = "${var.environment}-aws-config-role"
@@ -36,6 +44,9 @@ resource "aws_config_delivery_channel" "main" {
   name           = "${var.environment}-config-delivery"
   s3_bucket_name = var.s3_bucket_id
   s3_key_prefix  = "config"
+  # The key was passed in but never applied, so snapshots were landing under
+  # the bucket default rather than the key this module was handed.
+  s3_kms_key_arn = var.kms_key_arn
 
   snapshot_delivery_properties {
     delivery_frequency = "Six_Hours"

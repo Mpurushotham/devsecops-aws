@@ -1,5 +1,11 @@
-variable "root_email_prefix" { default = "aws" }
-variable "org_domain" {}
+# This module creates the organization, its OUs and the service control
+# policies. It deliberately does not create member accounts: account creation is
+# effectively irreversible (closing an AWS account is a 90-day process), so it is
+# left as a console or CLI step rather than something a plan can do by accident.
+#
+# The root_email_prefix and org_domain variables that used to sit here existed
+# only for that account creation and were never referenced, so they are gone
+# rather than left as a misleading interface.
 
 resource "aws_organizations_organization" "main" {
   aws_service_access_principals = [

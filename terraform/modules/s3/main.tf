@@ -167,8 +167,6 @@ resource "aws_s3_bucket_logging" "main" {
 
 data "aws_caller_identity" "current" {}
 
-data "aws_region" "current" {}
-
 # The regional account AWS uses to deliver ALB access logs. Some regions use a
 # named account principal rather than the delivery.logs service principal.
 data "aws_elb_service_account" "current" {}

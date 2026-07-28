@@ -1,7 +1,23 @@
-variable "environment" {}
-variable "repositories" { type = list(string) }
-variable "kms_key_arn" {}
-variable "image_retention_count" { default = 10 }
+variable "environment" {
+  description = "Deployment environment name, used as the repository namespace"
+  type        = string
+}
+
+variable "repositories" {
+  description = "Repository names to create under the environment namespace"
+  type        = list(string)
+}
+
+variable "kms_key_arn" {
+  description = "KMS key ARN used for repository encryption"
+  type        = string
+}
+
+variable "image_retention_count" {
+  description = "Number of tagged images to keep before expiry"
+  type        = number
+  default     = 10
+}
 
 resource "aws_ecr_repository" "repos" {
   for_each             = toset(var.repositories)

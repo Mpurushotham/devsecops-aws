@@ -3,11 +3,6 @@ variable "environment" {
   type        = string
 }
 
-variable "kms_key_arn" {
-  description = "KMS key ARN used to encrypt log groups owned by this module"
-  type        = string
-}
-
 variable "sns_alarm_arn" {
   description = "SNS topic ARN notified by the CIS alarms. Alarm actions are omitted when empty."
   type        = string
@@ -96,6 +91,24 @@ resource "aws_cloudwatch_dashboard" "main" {
           region = var.aws_region
           period = 3600
           stat   = "Sum"
+          view   = "timeSeries"
+        }
+      },
+      {
+        type   = "metric"
+        x      = 0
+        y      = 12
+        width  = 12
+        height = 6
+        properties = {
+          title = "EKS Node CPU/Memory Utilization"
+          metrics = [
+            ["ContainerInsights", "node_cpu_utilization", "ClusterName", var.eks_cluster_name],
+            ["ContainerInsights", "node_memory_utilization", "ClusterName", var.eks_cluster_name]
+          ]
+          region = var.aws_region
+          period = 300
+          stat   = "Average"
           view   = "timeSeries"
         }
       },

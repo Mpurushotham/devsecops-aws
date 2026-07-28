@@ -3,11 +3,6 @@ variable "environment" {
   type        = string
 }
 
-variable "cluster_name" {
-  description = "EKS cluster ArgoCD is installed into"
-  type        = string
-}
-
 variable "oidc_provider_arn" {
   description = "IAM OIDC provider ARN from the EKS module, used to build IRSA trust policies"
   type        = string
