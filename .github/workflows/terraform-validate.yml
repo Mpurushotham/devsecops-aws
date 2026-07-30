@@ -29,31 +29,61 @@ jobs:
   # Plan and apply need a real role. Without AWS_ACCOUNT_ID the ARN renders as
   # arn:aws:iam:::role/... and the run fails with "Request ARN is invalid",
   # which reads like a broken workflow rather than unconfigured credentials.
+  # Whether the AWS side of this pipeline can run. Two conditions, because
+  # either one failing produces a misleading error otherwise: without
+  # AWS_ACCOUNT_ID the role ARN renders as arn:aws:iam:::role/... and the run
+  # dies with "Request ARN is invalid"; with the secret set but before
+  # terraform has created the role, it dies with an AssumeRole failure after
+  # twelve retries. Neither message points at the real cause.
   aws-preflight:
     name: AWS Configured?
     runs-on: ubuntu-latest
     outputs:
-      configured: ${{ steps.check.outputs.configured }}
+      configured: ${{ steps.verify.outputs.configured }}
     steps:
-      - id: check
+      - id: secret
         env:
           ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
         run: |
           if [ -n "${ACCOUNT_ID}" ]; then
-            echo "configured=true" >> "$GITHUB_OUTPUT"
+            echo "present=true" >> "$GITHUB_OUTPUT"
           else
-            echo "configured=false" >> "$GITHUB_OUTPUT"
-            {
-              echo "### Terraform plan and apply skipped"
-              echo
-              echo "\`AWS_ACCOUNT_ID\` is not set. Validation, formatting and"
-              echo "linting still ran and still gate this pull request; only the"
-              echo "steps that need live credentials were skipped."
-              echo
-              echo "Enable with \`./scripts/bootstrap.sh\`, then apply"
-              echo "\`terraform/environments/dev\`, then set the secret."
-            } >> "$GITHUB_STEP_SUMMARY"
+            echo "present=false" >> "$GITHUB_OUTPUT"
           fi
+
+      - id: assume
+        if: steps.secret.outputs.present == 'true'
+        continue-on-error: true
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/dev-cicd-deploy-role
+          aws-region: us-east-1
+          role-session-name: Preflight
+
+      - id: verify
+        env:
+          HAS_SECRET: ${{ steps.secret.outputs.present }}
+          ASSUMED: ${{ steps.assume.outcome }}
+        run: |
+          if [ "${HAS_SECRET}" = "true" ] && [ "${ASSUMED}" = "success" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+            echo "AWS reachable; build and deploy jobs will run." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "configured=false" >> "$GITHUB_OUTPUT"
+          {
+            echo "### AWS jobs skipped"
+            echo
+            if [ "${HAS_SECRET}" != "true" ]; then
+              echo "\`AWS_ACCOUNT_ID\` is not set."
+            else
+              echo "\`AWS_ACCOUNT_ID\` is set, but \`dev-cicd-deploy-role\` could not be assumed."
+              echo "It is created by \`terraform apply\`, which has not run yet."
+            fi
+            echo
+            echo "Sequence: \`./scripts/bootstrap.sh\`, then apply \`terraform/environments/dev\`,"
+            echo "then set the secret. Lint, validation and tests are unaffected and still gate this PR."
+          } >> "$GITHUB_STEP_SUMMARY"
 
   validate:
     name: Terraform Validate
