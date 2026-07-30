@@ -18,8 +18,11 @@ spec:
 
   containers:
     - name: app
-      image: ACCOUNT.dkr.ecr.us-east-1.amazonaws.com/prod/api:latest
-      imagePullPolicy: Always
+      # Pinned deliberately. ":latest" is mutable, so the image a pod restart
+      # pulls need not be the one that was scanned and signed, and Polaris
+      # counts it as having no tag at all.
+      image: ACCOUNT.dkr.ecr.us-east-1.amazonaws.com/prod/api:1.0.0
+      imagePullPolicy: IfNotPresent
 
       ports:
         - containerPort: 8080

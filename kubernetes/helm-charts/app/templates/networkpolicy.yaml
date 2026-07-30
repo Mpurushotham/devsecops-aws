@@ -1,0 +1,44 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "app.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "app.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "app.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # The namespace default-denies, so the ingress controller needs an explicit
+    # path to these pods.
+    - from:
+        {{- toYaml .Values.networkPolicy.ingressFrom | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.service.targetPort }}
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              # Blocks pods from reaching the instance metadata service, which
+              # would otherwise expose the node's IAM role credentials.
+              - 169.254.169.254/32
+      ports:
+        - protocol: TCP
+          port: 443
+{{- end }}

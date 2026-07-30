@@ -1,0 +1,39 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: app-prod
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: platform
+
+  source:
+    repoURL: https://github.com/Mpurushotham/devsecops-aws.git
+    # Production tracks a tag, not a branch. Anything merged to main reaches
+    # dev and staging immediately; production moves only when someone cuts a
+    # release tag, and that act is the approval gate.
+    targetRevision: v1.0.0
+    path: kubernetes/helm-charts/app
+    helm:
+      valueFiles:
+        - values.yaml
+        - values-prod.yaml
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: prod
+
+  syncPolicy:
+    # Deliberately not automated. Production syncs are triggered explicitly, so
+    # a mistagged release cannot roll itself out unattended. selfHeal is also
+    # off: reverting an emergency manual change is a decision, not a reflex.
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+    retry:
+      limit: 3
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 10m

@@ -4,8 +4,17 @@ variable "aws_region" {
   default     = "us-east-1"
 }
 
-variable "environment" {
-  description = "Deployment environment"
+variable "eks_cluster_version" {
+  description = "Kubernetes control plane version for the EKS cluster"
   type        = string
-  default     = "dev"
+  default     = "1.31"
+}
+
+variable "certificate_arn" {
+  description = <<-EOT
+    ACM certificate for the ALB HTTPS listener. Required: the ECS module has no
+    plaintext fallback. Issue one for the environment's hostname, or import a
+    self-signed certificate into ACM for a throwaway environment.
+  EOT
+  type        = string
 }

@@ -1,0 +1,30 @@
+# Dev overlay. Smallest footprint that still exercises the production shape.
+environment: dev
+
+image:
+  repository: 113897201107.dkr.ecr.us-east-1.amazonaws.com/dev/api
+  pullPolicy: Always
+
+replicaCount: 2
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 4
+
+config:
+  allowedHosts: '*'
+
+ingress:
+  enabled: true
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internal
+    alb.ingress.kubernetes.io/target-type: ip
+    # Dev has no certificate yet, so the listener is plain HTTP. This must not
+    # be copied into staging or prod.
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80}]'
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+
+topologySpreadConstraints:
+  enabled: true
+  whenUnsatisfiable: ScheduleAnyway

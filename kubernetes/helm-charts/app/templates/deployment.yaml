@@ -1,18 +1,19 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ .Release.Name }}-app
-  namespace: {{ .Values.environment }}
+  name: {{ include "app.fullname" . }}
+  namespace: {{ .Release.Namespace }}
   labels:
-    app: api
-    version: {{ .Values.image.tag }}
-    environment: {{ .Values.environment }}
+    {{- include "app.labels" . | nindent 4 }}
 spec:
+  {{- if not .Values.autoscaling.enabled }}
+  # Omitted entirely when the HPA is enabled, otherwise Helm and the HPA fight
+  # over replica count on every upgrade.
   replicas: {{ .Values.replicaCount }}
+  {{- end }}
   selector:
     matchLabels:
-      app: api
-      environment: {{ .Values.environment }}
+      {{- include "app.selectorLabels" . | nindent 6 }}
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -21,39 +22,46 @@ spec:
   template:
     metadata:
       labels:
-        app: api
-        version: {{ .Values.image.tag }}
-        environment: {{ .Values.environment }}
+        {{- include "app.labels" . | nindent 8 }}
       annotations:
-        prometheus.io/scrape: "true"
-        prometheus.io/port: "9090"
+        # Rolls the pods whenever config changes, so a ConfigMap edit actually
+        # reaches the running containers.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
     spec:
-      serviceAccountName: {{ .Values.serviceAccount.name }}
-      automountServiceAccountToken: false
+      serviceAccountName: {{ include "app.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automount }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       terminationGracePeriodSeconds: 30
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       {{- if .Values.topologySpreadConstraints.enabled }}
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: topology.kubernetes.io/zone
-          whenUnsatisfiable: DoNotSchedule
+          whenUnsatisfiable: {{ .Values.topologySpreadConstraints.whenUnsatisfiable }}
           labelSelector:
             matchLabels:
-              app: api
+              {{- include "app.selectorLabels" . | nindent 14 }}
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
-          whenUnsatisfiable: DoNotSchedule
+          whenUnsatisfiable: {{ .Values.topologySpreadConstraints.whenUnsatisfiable }}
           labelSelector:
             matchLabels:
-              app: api
+              {{- include "app.selectorLabels" . | nindent 14 }}
       {{- end }}
       containers:
-        - name: app
-          image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
+        - name: {{ .Chart.Name }}
+          image: "{{ required "image.repository must be set" .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
-            - containerPort: 8080
+            - name: http
+              containerPort: {{ .Values.service.targetPort }}
               protocol: TCP
           securityContext:
             {{- toYaml .Values.containerSecurityContext | nindent 12 }}
@@ -63,10 +71,25 @@ spec:
             {{- toYaml .Values.livenessProbe | nindent 12 }}
           readinessProbe:
             {{- toYaml .Values.readinessProbe | nindent 12 }}
+          {{- with .Values.startupProbe }}
+          startupProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "app.fullname" . }}
           env:
-            - name: ENVIRONMENT
-              value: {{ .Values.environment }}
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
           volumeMounts:
+            # readOnlyRootFilesystem is on, so every path the process writes to
+            # needs an explicit writable mount.
             - mountPath: /tmp
               name: tmp
             - mountPath: /var/cache
@@ -76,3 +99,11 @@ spec:
           emptyDir: {}
         - name: cache
           emptyDir: {}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

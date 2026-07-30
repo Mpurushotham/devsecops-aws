@@ -1,34 +1,59 @@
+# Defaults for the devsecops-app chart.
+# Per-environment overlays live in values-<env>.yaml and are applied by
+# .github/workflows/eks-deploy.yml.
+
 replicaCount: 2
 
+nameOverride: ''
+fullnameOverride: ''
+
 image:
-  repository: ""
+  # Set per environment to the ECR repository URL. Templating fails fast when
+  # this is empty rather than rendering an unpullable "":tag reference.
+  repository: ''
   tag: latest
-  pullPolicy: Always
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
 
 environment: dev
+awsRegion: us-east-1
+
+config:
+  # Empty means no cross-origin access, which is the safe default.
+  allowedOrigins: ''
+  allowedHosts: '*'
 
 service:
   type: ClusterIP
   port: 80
   targetPort: 8080
+  annotations: {}
 
 ingress:
   enabled: true
   className: alb
   annotations:
-    kubernetes.io/ingress.class: alb
     alb.ingress.kubernetes.io/scheme: internal
     alb.ingress.kubernetes.io/target-type: ip
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
     alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-TLS13-1-2-2021-06
-    alb.ingress.kubernetes.io/wafv2-acl-arn: ""
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+  hosts:
+    - host: ''
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
 
 resources:
   requests:
     cpu: 100m
     memory: 128Mi
   limits:
-    cpu: 500m
+    # No CPU limit on purpose: CPU limits cause throttling well before
+    # saturation, and the request already guarantees the share. Memory is
+    # limited because it is not compressible.
     memory: 512Mi
 
 autoscaling:
@@ -49,13 +74,20 @@ podSecurityContext:
 containerSecurityContext:
   allowPrivilegeEscalation: false
   readOnlyRootFilesystem: true
+  privileged: false
   capabilities:
-    drop: ["ALL"]
+    drop: ['ALL']
 
 serviceAccount:
   create: true
-  name: app-sa
+  name: ''
+  # The app talks to AWS through the SDK, which needs the projected token.
+  # Set to false only for workloads that make no AWS calls.
+  automount: true
   annotations: {}
+  # eks.amazonaws.com/role-arn: arn:aws:iam::<account>:role/<irsa-role>
+
+podAnnotations: {}
 
 podDisruptionBudget:
   enabled: true
@@ -63,17 +95,44 @@ podDisruptionBudget:
 
 topologySpreadConstraints:
   enabled: true
+  # DoNotSchedule blocks scheduling outright when spread cannot be satisfied,
+  # which wedges deploys on small clusters. Environments with enough nodes
+  # override this to DoNotSchedule.
+  whenUnsatisfiable: ScheduleAnyway
+
+networkPolicy:
+  enabled: true
+  ingressFrom:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+
+nodeSelector: {}
+tolerations: []
 
 livenessProbe:
   httpGet:
     path: /health
-    port: 8080
+    port: http
   initialDelaySeconds: 10
   periodSeconds: 15
+  timeoutSeconds: 5
+  failureThreshold: 3
 
 readinessProbe:
   httpGet:
     path: /ready
-    port: 8080
+    port: http
   initialDelaySeconds: 5
   periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+startupProbe:
+  httpGet:
+    path: /health
+    port: http
+  periodSeconds: 5
+  # Allows up to 150s for a slow first start without loosening the liveness
+  # probe, which would delay detection of a genuine hang.
+  failureThreshold: 30

@@ -1,0 +1,104 @@
+{
+  "$comment": [
+    "AWS Labs MCP servers for this project.",
+    "",
+    "Every server that can reach the AWS account is pinned to read-only.",
+    "READ_OPERATIONS_ONLY and the --readonly flags are what stop an assistant",
+    "mutating infrastructure as a side effect of answering a question.",
+    "Provisioning goes through Terraform and a reviewed plan, not a tool call.",
+    "",
+    "AWS_PROFILE is the muktha-aws login session, never root. Run `aws login`",
+    "first; these servers inherit that session.",
+    "",
+    "terraform is HashiCorp's server: awslabs.terraform-mcp-server was yanked",
+    "in favour of it. awslabs.aws-diagram-mcp-server was also yanked, and is",
+    "omitted because the diagrams in docs/ are mermaid and render natively.",
+    "",
+    "The terraform and aws-docs servers do not touch the account and need no",
+    "credentials."
+  ],
+  "mcpServers": {
+    "aws-api": {
+      "command": "uvx",
+      "args": [
+        "awslabs.aws-api-mcp-server@latest"
+      ],
+      "env": {
+        "AWS_REGION": "us-east-1",
+        "AWS_PROFILE": "default",
+        "READ_OPERATIONS_ONLY": "true",
+        "REQUIRE_MUTATION_CONSENT": "true",
+        "AWS_API_MCP_WORKING_DIR": "/private/tmp/claude-501/-Users-purushothammuktha-Documents-GitHub-devsecops-aws/b5ebb6be-85ba-4b82-8729-33fe90efd609/scratchpad",
+        "FASTMCP_LOG_LEVEL": "ERROR"
+      }
+    },
+    "eks": {
+      "command": "uvx",
+      "args": [
+        "awslabs.eks-mcp-server@latest",
+        "--allow-sensitive-data-access"
+      ],
+      "env": {
+        "AWS_REGION": "us-east-1",
+        "AWS_PROFILE": "default",
+        "FASTMCP_LOG_LEVEL": "ERROR"
+      }
+    },
+    "ecs": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "awslabs.ecs-mcp-server@latest",
+        "ecs-mcp-server"
+      ],
+      "env": {
+        "AWS_REGION": "us-east-1",
+        "AWS_PROFILE": "default",
+        "ALLOW_WRITE": "false",
+        "ALLOW_SENSITIVE_DATA": "false",
+        "FASTMCP_LOG_LEVEL": "ERROR"
+      }
+    },
+    "cloudwatch": {
+      "command": "uvx",
+      "args": [
+        "awslabs.cloudwatch-mcp-server@latest"
+      ],
+      "env": {
+        "AWS_REGION": "us-east-1",
+        "AWS_PROFILE": "default",
+        "FASTMCP_LOG_LEVEL": "ERROR"
+      }
+    },
+    "iam": {
+      "command": "uvx",
+      "args": [
+        "awslabs.iam-mcp-server@latest",
+        "--readonly"
+      ],
+      "env": {
+        "AWS_REGION": "us-east-1",
+        "AWS_PROFILE": "default",
+        "FASTMCP_LOG_LEVEL": "ERROR"
+      }
+    },
+    "terraform": {
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "hashicorp/terraform-mcp-server:1.1.0"
+      ]
+    },
+    "aws-docs": {
+      "command": "uvx",
+      "args": [
+        "awslabs.aws-documentation-mcp-server@latest"
+      ],
+      "env": {
+        "FASTMCP_LOG_LEVEL": "ERROR"
+      }
+    }
+  }
+}

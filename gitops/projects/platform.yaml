@@ -1,0 +1,49 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: platform
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  description: Platform add-ons and workloads managed by GitOps
+
+  sourceRepos:
+    # Explicit allow-list. The ArgoCD default is '*', which lets anyone able to
+    # create an Application pull manifests from a repository nobody reviews.
+    - https://github.com/Mpurushotham/devsecops-aws.git
+    - https://aws.github.io/eks-charts
+    - https://kubernetes-sigs.github.io/metrics-server/
+
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: dev
+    - server: https://kubernetes.default.svc
+      namespace: staging
+    - server: https://kubernetes.default.svc
+      namespace: prod
+    - server: https://kubernetes.default.svc
+      namespace: kube-system
+
+  clusterResourceWhitelist:
+    - group: ''
+      kind: Namespace
+    - group: rbac.authorization.k8s.io
+      kind: ClusterRole
+    - group: rbac.authorization.k8s.io
+      kind: ClusterRoleBinding
+    - group: apiextensions.k8s.io
+      kind: CustomResourceDefinition
+
+  namespaceResourceBlacklist:
+    # Nothing declared in git should be able to grant itself quota headroom or
+    # rewrite the limits it is supposed to run within.
+    - group: ''
+      kind: ResourceQuota
+    - group: ''
+      kind: LimitRange
+
+  orphanedResources:
+    # Surfaces anything in these namespaces that git does not know about,
+    # without deleting it automatically.
+    warn: true

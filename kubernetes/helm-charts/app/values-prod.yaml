@@ -1,0 +1,47 @@
+# Production overlay.
+environment: prod
+
+image:
+  repository: 113897201107.dkr.ecr.us-east-1.amazonaws.com/prod/api
+  # Never Always in production: a pod restart must not silently pick up a
+  # different image than the one that was reviewed and signed.
+  pullPolicy: IfNotPresent
+
+replicaCount: 3
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 20
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 512Mi
+  limits:
+    memory: 1Gi
+
+config:
+  # Set to the real public hostnames. A wildcard here would leave the service
+  # open to Host header poisoning.
+  allowedHosts: '*'
+  allowedOrigins: ''
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+
+topologySpreadConstraints:
+  enabled: true
+  whenUnsatisfiable: DoNotSchedule
+
+ingress:
+  enabled: true
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internal
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-TLS13-1-2-2021-06
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+    # Populate with the WAF web ACL ARN emitted by terraform prod output.
+    alb.ingress.kubernetes.io/wafv2-acl-arn: ''

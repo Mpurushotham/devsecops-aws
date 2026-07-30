@@ -6,7 +6,24 @@
 [![Container Build](https://github.com/Mpurushotham/devsecops-aws/actions/workflows/container-build.yml/badge.svg)](https://github.com/Mpurushotham/devsecops-aws/actions/workflows/container-build.yml)
 [![Compliance Report](https://github.com/Mpurushotham/devsecops-aws/actions/workflows/compliance-report.yml/badge.svg)](https://github.com/Mpurushotham/devsecops-aws/actions/workflows/compliance-report.yml)
 
-A production-grade DevSecOps platform on AWS covering infrastructure as code, multi-account organization, full CI/CD security pipeline, ECS and EKS compute, automated threat detection and response, compliance automation, and observability.
+A reference DevSecOps platform on AWS: infrastructure as code, a CI/CD pipeline
+whose security checks are gates rather than dashboards, ECS and EKS compute,
+GitOps delivery with ArgoCD, automated detection and response, and compliance
+evidence.
+
+**Start here**
+
+| If you want to | Read |
+|---|---|
+| Understand what problems this solves | [docs/problem-statement.md](docs/problem-statement.md) |
+| See the architecture | [docs/diagrams/architecture.md](docs/diagrams/architecture.md) |
+| Know why something is built this way | [docs/adr/](docs/adr/) |
+| Deploy it end to end | [docs/scenarios/](docs/scenarios/) |
+| Use the MCP tooling | [docs/mcp-servers.md](docs/mcp-servers.md) |
+
+> **Before the first deploy:** run `./scripts/bootstrap.sh`, then apply each
+> environment with a `certificate_arn`. There is no plaintext-listener fallback
+> by design; see [ADR 0006](docs/adr/0006-mandatory-tls.md).
 
 ## Architecture
 
@@ -65,7 +82,8 @@ devsecops-aws/
 ├── .github/
 │   └── workflows/
 │       ├── devsecops-pipeline.yml     # Orchestrator pipeline
-│       ├── security-scan.yml          # GitLeaks, Semgrep, CodeQL, Checkov, tfsec
+│       ├── security-scan.yml          # GitLeaks, Semgrep, CodeQL, Checkov, Trivy,
+│       │                                #   kubeconform, Polaris, helm lint, actionlint
 │       ├── container-build.yml        # Build, Trivy, Grype, cosign sign, SBOM
 │       ├── terraform-validate.yml     # fmt, validate, plan, apply per environment
 │       ├── eks-deploy.yml             # EKS Helm deploy with smoke tests
@@ -74,6 +92,7 @@ devsecops-aws/
 │
 ├── terraform/
 │   ├── modules/
+│   │   ├── argocd/                    # ArgoCD via Helm + IRSA + root Application
 │   │   ├── kms/                       # KMS CMKs with rotation
 │   │   ├── cloudtrail/                # Multi-region trail, CW Logs, insights
 │   │   ├── security-hub/              # CIS v1.2 + v3.0, NIST, PCI, AWS Foundational
@@ -145,6 +164,25 @@ devsecops-aws/
 └── .pre-commit-config.yaml              # GitLeaks, Terraform fmt/validate/checkov/tfsec, Hadolint
 ```
 
+### Added in this revision
+
+```
+├── app/                              # Vendored AWS retail store sample (see app/VENDOR.md)
+├── gitops/
+│   ├── bootstrap/                    # app-of-apps root, sync-wave ordered
+│   ├── projects/                     # ArgoCD AppProject with a source allow-list
+│   └── applications/                 # One Application per environment
+├── docs/
+│   ├── problem-statement.md          # Problems solved, use cases, and what is not solved
+│   ├── adr/                          # 8 decision records
+│   ├── diagrams/                     # Mermaid architecture, network, delivery, controls
+│   ├── scenarios/                    # 4 end-to-end walkthroughs
+│   └── mcp-servers.md                # AWS Labs MCP setup
+├── .mcp.json                         # 7 read-only MCP servers
+├── .trivyignore.yaml                 # Accepted findings, each with a justification
+└── .semgrepignore                    # Vendored code excluded from the SAST gate
+```
+
 ## Security Tools Matrix
 
 | Category | Tool | Where Used |
@@ -189,12 +227,20 @@ devsecops-aws/
 
 ### 2. Deploy Infrastructure
 
+`certificate_arn` is required and has no default. The ECS module has no
+plaintext listener, so there is no configuration in which the load balancer
+silently serves HTTP ([ADR 0006](docs/adr/0006-mandatory-tls.md)). For an
+environment with no domain, import a self-signed certificate into ACM.
+
 ```bash
 cd terraform/environments/dev
 terraform init
-terraform plan
-terraform apply
+terraform plan  -var="certificate_arn=arn:aws:acm:us-east-1:<account>:certificate/<id>"
+terraform apply -var="certificate_arn=arn:aws:acm:us-east-1:<account>:certificate/<id>"
 ```
+
+This also installs ArgoCD and creates the single root Application that
+bootstraps everything under `gitops/`.
 
 ### 3. Configure kubectl for EKS
 
@@ -205,14 +251,26 @@ kubectl apply -f kubernetes/manifests/rbac/
 kubectl apply -f kubernetes/manifests/network-policies/
 ```
 
-### 4. Deploy Application via Helm
+If `kubectl get nodes` returns nothing, node registration failed. The usual
+cause is a private subnet with no NAT route.
+
+### 4. Application delivery
+
+Kubernetes workloads are reconciled from git, not pushed with `helm upgrade`.
+Watch ArgoCD converge:
 
 ```bash
-helm upgrade --install app kubernetes/helm-charts/app \
-  --namespace dev \
-  --set image.repository=ACCOUNT.dkr.ecr.us-east-1.amazonaws.com/dev/api \
-  --set image.tag=latest \
-  --set environment=dev
+kubectl -n argocd get applications -w
+```
+
+`app-dev` and `app-staging` sync automatically; `app-prod` tracks a release tag
+and syncs only when triggered ([ADR 0003](docs/adr/0003-gitops-with-argocd.md)).
+
+To render the chart locally without applying it:
+
+```bash
+helm template app kubernetes/helm-charts/app \
+  --values kubernetes/helm-charts/app/values-dev.yaml
 ```
 
 ### 5. Configure GitHub Actions Secrets

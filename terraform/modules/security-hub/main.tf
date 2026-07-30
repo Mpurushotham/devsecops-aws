@@ -1,8 +1,36 @@
-variable "environment" {}
-variable "enable_cis"    { default = true }
-variable "enable_pci"    { default = false }
-variable "enable_nist"   { default = true }
-variable "enable_aws_foundational" { default = true }
+variable "environment" {
+  description = "Deployment environment name, used as a prefix for all resources"
+  type        = string
+}
+
+variable "kms_key_arn" {
+  description = "Customer-managed KMS key used to encrypt the security alert topic"
+  type        = string
+}
+
+variable "enable_cis" {
+  description = "Subscribe to the CIS AWS Foundations Benchmark standard"
+  type        = bool
+  default     = true
+}
+
+variable "enable_pci" {
+  description = "Subscribe to the PCI DSS standard"
+  type        = bool
+  default     = false
+}
+
+variable "enable_nist" {
+  description = "Subscribe to the NIST 800-53 standard"
+  type        = bool
+  default     = true
+}
+
+variable "enable_aws_foundational" {
+  description = "Subscribe to the AWS Foundational Security Best Practices standard"
+  type        = bool
+  default     = true
+}
 
 resource "aws_securityhub_account" "main" {}
 
@@ -51,8 +79,8 @@ resource "aws_cloudwatch_event_rule" "securityhub_findings" {
     detail-type = ["Security Hub Findings - Imported"]
     detail = {
       findings = {
-        Severity = { Label = ["CRITICAL", "HIGH"] }
-        Workflow  = { Status = ["NEW"] }
+        Severity    = { Label = ["CRITICAL", "HIGH"] }
+        Workflow    = { Status = ["NEW"] }
         RecordState = ["ACTIVE"]
       }
     }
@@ -66,8 +94,10 @@ resource "aws_cloudwatch_event_target" "securityhub_sns" {
 }
 
 resource "aws_sns_topic" "security_alerts" {
-  name              = "${var.environment}-security-alerts"
-  kms_master_key_id = "alias/aws/sns"
+  name = "${var.environment}-security-alerts"
+  # The AWS-managed alias/aws/sns key cannot have its policy or rotation
+  # controlled, so security findings ride on a customer-managed key instead.
+  kms_master_key_id = var.kms_key_arn
 }
 
 resource "aws_sns_topic_policy" "security_alerts" {

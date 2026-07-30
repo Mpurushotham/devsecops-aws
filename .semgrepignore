@@ -1,0 +1,16 @@
+# Semgrep exclusions.
+#
+# app/ is a vendored, pinned copy of an upstream AWS sample (see app/VENDOR.md).
+# It is scanned for awareness through the container image scan in
+# container-build.yml, but it does not gate this repository's CI: findings in
+# third-party code are not ours to fix in place, and gating on them would block
+# unrelated changes indefinitely. The correct response to a vulnerability there
+# is to refresh the vendored version. See docs/adr/0008-vendored-sample-app.md.
+app/
+
+# Terraform is covered by Checkov and Trivy config scanning, which understand
+# resource semantics rather than matching source patterns.
+terraform/
+
+.terraform/
+.git/

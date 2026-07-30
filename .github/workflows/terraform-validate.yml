@@ -5,10 +5,12 @@ on:
     branches: [main]
     paths:
       - 'terraform/**'
+      - '.github/workflows/terraform-validate.yml'
   push:
-    branches: [main]
+    branches: [main, develop]
     paths:
       - 'terraform/**'
+      - '.github/workflows/terraform-validate.yml'
 
 permissions:
   contents: read
@@ -16,85 +18,211 @@ permissions:
   pull-requests: write
 
 env:
-  TF_VERSION: 1.5.7
+  TF_VERSION: 1.9.8
   AWS_REGION: us-east-1
 
+concurrency:
+  group: terraform-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
+  # Plan and apply need a real role. Without AWS_ACCOUNT_ID the ARN renders as
+  # arn:aws:iam:::role/... and the run fails with "Request ARN is invalid",
+  # which reads like a broken workflow rather than unconfigured credentials.
+  # Whether the AWS side of this pipeline can run. Two conditions, because
+  # either one failing produces a misleading error otherwise: without
+  # AWS_ACCOUNT_ID the role ARN renders as arn:aws:iam:::role/... and the run
+  # dies with "Request ARN is invalid"; with the secret set but before
+  # terraform has created the role, it dies with an AssumeRole failure after
+  # twelve retries. Neither message points at the real cause.
+  aws-preflight:
+    name: AWS Configured?
+    runs-on: ubuntu-latest
+    outputs:
+      configured: ${{ steps.verify.outputs.configured }}
+    steps:
+      - id: secret
+        env:
+          ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+        run: |
+          if [ -n "${ACCOUNT_ID}" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - id: assume
+        if: steps.secret.outputs.present == 'true'
+        continue-on-error: true
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/dev-cicd-deploy-role
+          aws-region: us-east-1
+          role-session-name: Preflight
+
+      - id: verify
+        env:
+          HAS_SECRET: ${{ steps.secret.outputs.present }}
+          ASSUMED: ${{ steps.assume.outcome }}
+        run: |
+          if [ "${HAS_SECRET}" = "true" ] && [ "${ASSUMED}" = "success" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+            echo "AWS reachable; build and deploy jobs will run." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "configured=false" >> "$GITHUB_OUTPUT"
+          {
+            echo "### AWS jobs skipped"
+            echo
+            if [ "${HAS_SECRET}" != "true" ]; then
+              echo "\`AWS_ACCOUNT_ID\` is not set."
+            else
+              echo "\`AWS_ACCOUNT_ID\` is set, but \`dev-cicd-deploy-role\` could not be assumed."
+              echo "It is created by \`terraform apply\`, which has not run yet."
+            fi
+            echo
+            echo "Sequence: \`./scripts/bootstrap.sh\`, then apply \`terraform/environments/dev\`,"
+            echo "then set the secret. Lint, validation and tests are unaffected and still gate this PR."
+          } >> "$GITHUB_STEP_SUMMARY"
+
   validate:
     name: Terraform Validate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: hashicorp/setup-terraform@v3
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4
         with:
           terraform_version: ${{ env.TF_VERSION }}
-      - name: Terraform Format Check
+
+      - name: Terraform format check
         run: terraform fmt -check -recursive terraform/
-      - name: Validate All Modules
+
+      - name: Validate all modules
         run: |
+          # The previous version used `cd -`, which prints the directory and
+          # breaks as soon as one module fails, masking the rest. This reports
+          # every module and fails once at the end.
+          status=0
           for dir in terraform/modules/*/; do
-            echo "Validating $dir"
-            cd "$dir"
-            terraform init -backend=false
-            terraform validate
-            cd -
+            [ -f "${dir}main.tf" ] || continue
+            echo "::group::${dir}"
+            if ! (cd "${dir}" && terraform init -backend=false -no-color && terraform validate -no-color); then
+              echo "::error::terraform validate failed for ${dir}"
+              status=1
+            fi
+            echo "::endgroup::"
           done
+          exit "${status}"
+
+      - name: Validate all environments
+        run: |
+          status=0
+          for dir in terraform/environments/*/; do
+            [ -f "${dir}main.tf" ] || continue
+            echo "::group::${dir}"
+            if ! (cd "${dir}" && terraform init -backend=false -no-color && terraform validate -no-color); then
+              echo "::error::terraform validate failed for ${dir}"
+              status=1
+            fi
+            echo "::endgroup::"
+          done
+          exit "${status}"
+
+  tflint:
+    name: Terraform Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: terraform-linters/setup-tflint@6e1e0642c0289bd619021bf6b34e3c08ed1e005a # v6
+        with:
+          tflint_version: latest
+      - name: Run tflint
+        # --chdir keeps the vendored app/ tree out of scope; see .tflint.hcl.
+        run: |
+          tflint --init
+          tflint --chdir=terraform --recursive --format compact
 
   plan-dev:
     name: Plan Dev
     runs-on: ubuntu-latest
-    needs: validate
+    needs: [validate, aws-preflight]
+    # Planning needs real credentials, which forks never have, and which this
+    # account does not have until bootstrap has run.
+    if: |
+      needs.aws-preflight.outputs.configured == 'true' &&
+      (github.event.pull_request.head.repo.full_name == github.repository || github.event_name == 'push')
     environment: dev
     steps:
-      - uses: actions/checkout@v4
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6
         with:
           role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/dev-cicd-deploy-role
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: TerraformPlan
-      - uses: hashicorp/setup-terraform@v3
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4
         with:
           terraform_version: ${{ env.TF_VERSION }}
-      - name: Terraform Init
+
+      - name: Terraform init
         working-directory: terraform/environments/dev
         run: terraform init
-      - name: Terraform Plan
-        working-directory: terraform/environments/dev
+
+      - name: Terraform plan
         id: plan
+        working-directory: terraform/environments/dev
+        # Scoped to this step rather than workflow-level env, which would hand
+        # the certificate ARN to every job in the file including the ones that
+        # never touch AWS.
+        env:
+          TF_VAR_certificate_arn: ${{ secrets.ACM_CERTIFICATE_ARN }}
         run: terraform plan -no-color -out=tfplan 2>&1 | tee plan_output.txt
-      - name: Comment PR
-        uses: actions/github-script@v7
+
+      - name: Comment plan on PR
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         if: github.event_name == 'pull_request'
         with:
           script: |
             const fs = require('fs');
             const plan = fs.readFileSync('terraform/environments/dev/plan_output.txt', 'utf8');
-            const body = `## Terraform Plan - Dev\n\`\`\`hcl\n${plan.slice(0, 65000)}\n\`\`\``;
-            github.rest.issues.createComment({
+            // A GitHub comment caps at 65536 characters including the fences,
+            // so leave headroom rather than slicing at exactly the limit.
+            const max = 60000;
+            const truncated = plan.length > max
+              ? plan.slice(0, max) + '\n\n...output truncated, see the job log for the full plan.'
+              : plan;
+            await github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body
+              body: `## Terraform Plan - Dev\n\`\`\`hcl\n${truncated}\n\`\`\``
             });
 
   plan-staging:
     name: Plan Staging
     runs-on: ubuntu-latest
-    needs: plan-dev
-    if: github.ref == 'refs/heads/main'
+    needs: [validate, aws-preflight]
+    if: needs.aws-preflight.outputs.configured == 'true' && github.ref == 'refs/heads/main' && github.event_name == 'push'
     environment: staging
     steps:
-      - uses: actions/checkout@v4
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6
         with:
           role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID_STAGING }}:role/staging-cicd-deploy-role
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: TerraformPlan
-      - uses: hashicorp/setup-terraform@v3
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4
         with:
           terraform_version: ${{ env.TF_VERSION }}
-      - name: Terraform Init & Plan
+
+      - name: Terraform init and plan
         working-directory: terraform/environments/staging
+        env:
+          TF_VAR_certificate_arn: ${{ secrets.ACM_CERTIFICATE_ARN }}
         run: |
           terraform init
           terraform plan -no-color
@@ -102,21 +230,26 @@ jobs:
   apply-dev:
     name: Apply Dev
     runs-on: ubuntu-latest
-    needs: plan-dev
-    if: github.ref == 'refs/heads/develop'
+    needs: [validate, aws-preflight]
+    if: needs.aws-preflight.outputs.configured == 'true' && github.ref == 'refs/heads/develop' && github.event_name == 'push'
     environment: dev
     steps:
-      - uses: actions/checkout@v4
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6
         with:
           role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/dev-cicd-deploy-role
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: TerraformApply
-      - uses: hashicorp/setup-terraform@v3
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4
         with:
           terraform_version: ${{ env.TF_VERSION }}
-      - name: Terraform Apply Dev
+
+      - name: Terraform apply
         working-directory: terraform/environments/dev
+        env:
+          TF_VAR_certificate_arn: ${{ secrets.ACM_CERTIFICATE_ARN }}
         run: |
           terraform init
           terraform apply -auto-approve
@@ -124,22 +257,34 @@ jobs:
   apply-prod:
     name: Apply Prod (Manual Approval)
     runs-on: ubuntu-latest
-    needs: plan-staging
-    if: github.ref == 'refs/heads/main'
-    environment:
-      name: production
+    needs: [plan-staging, aws-preflight]
+    if: needs.aws-preflight.outputs.configured == 'true' && github.ref == 'refs/heads/main' && github.event_name == 'push'
+    # The production environment must carry a required reviewer in repository
+    # settings; that approval gate is what makes this job safe, not the name.
+    environment: production
     steps:
-      - uses: actions/checkout@v4
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6
         with:
           role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID_PROD }}:role/prod-cicd-deploy-role
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: TerraformApply
-      - uses: hashicorp/setup-terraform@v3
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4
         with:
           terraform_version: ${{ env.TF_VERSION }}
-      - name: Terraform Apply Prod
+
+      - name: Terraform plan
         working-directory: terraform/environments/prod
+        env:
+          TF_VAR_certificate_arn: ${{ secrets.ACM_CERTIFICATE_ARN }}
         run: |
           terraform init
-          terraform apply -auto-approve
+          terraform plan -no-color -out=tfplan
+
+      - name: Terraform apply
+        working-directory: terraform/environments/prod
+        # Applies the reviewed plan file rather than re-resolving state, so what
+        # was approved is what gets applied.
+        run: terraform apply -no-color tfplan

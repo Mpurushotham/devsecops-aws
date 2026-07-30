@@ -1,7 +1,23 @@
-variable "environment" {}
-variable "repositories" { type = list(string) }
-variable "kms_key_arn"  {}
-variable "image_retention_count" { default = 10 }
+variable "environment" {
+  description = "Deployment environment name, used as the repository namespace"
+  type        = string
+}
+
+variable "repositories" {
+  description = "Repository names to create under the environment namespace"
+  type        = list(string)
+}
+
+variable "kms_key_arn" {
+  description = "KMS key ARN used for repository encryption"
+  type        = string
+}
+
+variable "image_retention_count" {
+  description = "Number of tagged images to keep before expiry"
+  type        = number
+  default     = 10
+}
 
 resource "aws_ecr_repository" "repos" {
   for_each             = toset(var.repositories)
@@ -30,10 +46,10 @@ resource "aws_ecr_lifecycle_policy" "repos" {
         rulePriority = 1
         description  = "Keep last N images"
         selection = {
-          tagStatus   = "tagged"
+          tagStatus     = "tagged"
           tagPrefixList = ["v"]
-          countType   = "imageCountMoreThan"
-          countNumber = var.image_retention_count
+          countType     = "imageCountMoreThan"
+          countNumber   = var.image_retention_count
         }
         action = { type = "expire" }
       },
@@ -41,9 +57,9 @@ resource "aws_ecr_lifecycle_policy" "repos" {
         rulePriority = 2
         description  = "Remove untagged images after 7 days"
         selection = {
-          tagStatus = "untagged"
-          countType = "sinceImagePushed"
-          countUnit = "days"
+          tagStatus   = "untagged"
+          countType   = "sinceImagePushed"
+          countUnit   = "days"
           countNumber = 7
         }
         action = { type = "expire" }
@@ -60,14 +76,14 @@ resource "aws_ecr_repository_policy" "repos" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid    = "AllowAccountPull"
-        Effect = "Allow"
+        Sid       = "AllowAccountPull"
+        Effect    = "Allow"
         Principal = { AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root" }
-        Action = ["ecr:GetDownloadUrlForLayer", "ecr:BatchGetImage", "ecr:BatchCheckLayerAvailability"]
+        Action    = ["ecr:GetDownloadUrlForLayer", "ecr:BatchGetImage", "ecr:BatchCheckLayerAvailability"]
       },
       {
-        Sid    = "DenyUnscannedImages"
-        Effect = "Deny"
+        Sid       = "DenyUnscannedImages"
+        Effect    = "Deny"
         Principal = "*"
         Action    = "ecr:GetDownloadUrlForLayer"
         Condition = {

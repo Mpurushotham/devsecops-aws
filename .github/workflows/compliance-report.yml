@@ -2,11 +2,11 @@ name: Compliance Report
 
 on:
   schedule:
-    - cron: '0 6 * * 1'   # Weekly Monday 6am UTC
+    - cron: '0 6 * * 1' # Weekly Monday 6am UTC
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
   id-token: write
   issues: write
 
@@ -19,64 +19,87 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6
         with:
           role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/prod-security-auditor
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: ComplianceReport
 
-      - name: Collect Security Hub Summary
+      - name: Collect Security Hub summary
         id: securityhub
         run: |
           aws securityhub get-findings \
             --filters '{"RecordState":[{"Value":"ACTIVE","Comparison":"EQUALS"}],"WorkflowStatus":[{"Value":"NEW","Comparison":"EQUALS"}]}' \
             --query 'Findings[].{Severity:Severity.Label,Title:Title,AccountId:AwsAccountId}' \
             --output json > securityhub-findings.json
-          echo "total=$(cat securityhub-findings.json | jq length)" >> $GITHUB_OUTPUT
+          echo "total=$(jq length securityhub-findings.json)" >> "$GITHUB_OUTPUT"
 
-      - name: Collect Config Compliance
+      - name: Collect Config compliance
         run: |
+          # shellcheck disable=SC2016
+          # The backticks are JMESPath literal syntax, not command substitution,
+          # and must stay inside single quotes for the query to parse.
           aws configservice describe-compliance-by-config-rule \
             --query 'ComplianceByConfigRules[?Compliance.ComplianceType!=`COMPLIANT`]' \
             --output json > config-noncompliant.json
 
-      - name: Collect GuardDuty Findings
+      - name: Collect GuardDuty findings
         run: |
-          DETECTOR=$(aws guardduty list-detectors --query 'DetectorIds[0]' --output text)
+          DETECTOR="$(aws guardduty list-detectors --query 'DetectorIds[0]' --output text)"
+          if [ "${DETECTOR}" = "None" ] || [ -z "${DETECTOR}" ]; then
+            echo "No GuardDuty detector in this account/region" >&2
+            echo '{"FindingIds":[]}' > guardduty-findings.json
+            exit 0
+          fi
           aws guardduty list-findings \
-            --detector-id "$DETECTOR" \
+            --detector-id "${DETECTOR}" \
             --finding-criteria '{"Criterion":{"severity":{"Gte":7}}}' \
             --output json > guardduty-findings.json
 
-      - name: Generate Markdown Report
+      - name: Generate markdown report
         run: |
-          cat > compliance-report.md << 'REPORT'
+          # Values are computed into shell variables first and the heredoc is
+          # left unquoted. The previous version used a quoted heredoc, so every
+          # $(...) was written to the report verbatim instead of being expanded.
+          generated_at="$(date -u +'%Y-%m-%d %H:%M UTC')"
+          sh_by_severity="$(jq -c '[.[] | {Severity}] | group_by(.Severity)
+                                    | map({severity: .[0].Severity, count: length})' \
+                            securityhub-findings.json)"
+          config_rules="$(jq -c '[.[] | {Rule: .ConfigRuleName, Status: .Compliance.ComplianceType}]' \
+                          config-noncompliant.json)"
+          gd_count="$(jq '.FindingIds | length' guardduty-findings.json)"
+
+          cat > compliance-report.md <<REPORT
           # Weekly Compliance Report
-          **Generated:** $(date -u +"%Y-%m-%d %H:%M UTC")
-          **Account:** ${{ secrets.AWS_ACCOUNT_ID }}
 
-          ## Security Hub Findings
-          ```json
-          $(cat securityhub-findings.json | jq '[.[] | {Severity, Title}] | group_by(.Severity) | map({severity: .[0].Severity, count: length})')
-          ```
+          **Generated:** ${generated_at}
+          **Run:** ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
 
-          ## Config Non-Compliant Rules
-          ```json
-          $(cat config-noncompliant.json | jq '[.[] | {Rule: .ConfigRuleName, Status: .Compliance.ComplianceType}]')
-          ```
+          ## Security Hub findings by severity
 
-          ## High Severity GuardDuty Findings
-          ```json
-          $(cat guardduty-findings.json | jq '.FindingIds | length') findings
-          ```
+          \`\`\`json
+          ${sh_by_severity}
+          \`\`\`
+
+          ## Config non-compliant rules
+
+          \`\`\`json
+          ${config_rules}
+          \`\`\`
+
+          ## High severity GuardDuty findings
+
+          ${gd_count} findings at severity 7 or above.
           REPORT
 
-      - name: Create GitHub Issue for Findings
-        uses: actions/github-script@v7
-        if: steps.securityhub.outputs.total > 0
+          cat compliance-report.md
+
+      - name: Create GitHub issue for findings
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        if: steps.securityhub.outputs.total != '0'
         with:
           script: |
             const fs = require('fs');
@@ -89,8 +112,9 @@ jobs:
               labels: ['compliance', 'security', 'automated']
             });
 
-      - name: Upload Reports as Artifact
-        uses: actions/upload-artifact@v4
+      - name: Upload reports as artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
         with:
           name: compliance-reports-${{ github.run_number }}
           path: |
