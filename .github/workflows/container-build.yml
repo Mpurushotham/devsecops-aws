@@ -48,6 +48,7 @@ jobs:
         with:
           image-ref: ${{ env.SCAN_IMAGE }}
           format: sarif
+          limit-severities-for-sarif: true
           output: trivy-results.sarif
           severity: CRITICAL,HIGH
           exit-code: "1"
